@@ -3,10 +3,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# 统一路径处理（移除重复导入/重复追加）
 sys.path.append(str(Path(__file__).parent.parent))
 
-# 配置日志（替换简单print，支持级别/格式化）
 logging.basicConfig(
     level=logging.INFO,
     format="[%(name)s] %(asctime)s - %(message)s",
@@ -14,40 +12,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("基本面Agent")
 
+from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from config.env_config import env_config
-from openai import OpenAI
 from agents.data_fetcher import DataFetcherAgent
 import tushare as ts
 
-# 提取常量（魔法数字显性化）
-DEFAULT_MODEL = "qwen"
-RECENT_YEARS = 3  # 近3年财务数据
-INDUSTRY_STOCK_LIMIT = 10  # 同行业股票数量上限
-LLM_TIMEOUT = 60  # LLM调用超时时间
-LLM_TEMPERATURE = 0.5  # 生成报告温度系数
-REPORT_MAX_TOKENS = 1500  # 报告最大token数
-
-# 统一模型配置（抽离重复映射）
-MODEL_CONFIG_MAP = {
-    "qwen": {"api_key": env_config.QWEN_API_KEY, "base_url": env_config.QWEN_BASE_URL, "model_id": "qwen-plus"},
-    "deepseek": {"api_key": env_config.DEEPSEEK_API_KEY, "base_url": env_config.DEEPSEEK_BASE_URL, "model_id": "deepseek-chat"},
-    "ernie": {"api_key": env_config.ERNIE_API_KEY, "base_url": env_config.ERNIE_BASE_URL, "model_id": "ernie-4.0"},
-    "spark": {"api_key": env_config.SPARK_API_KEY, "base_url": env_config.SPARK_BASE_URL, "model_id": "Spark-4.0"},
-    "hunyuan": {"api_key": env_config.HUNYUAN_API_KEY, "base_url": env_config.HUNYUAN_BASE_URL, "model_id": "hunyuan-pro"},
-    "doubao": {"api_key": env_config.DOUBAO_API_KEY, "base_url": env_config.DOUBAO_BASE_URL, "model_id": "doubao-pro"}
-}
+RECENT_YEARS = 3
+INDUSTRY_STOCK_LIMIT = 10
+LLM_TIMEOUT = 60
+LLM_TEMPERATURE = 0.5
+REPORT_MAX_TOKENS = 1500
 
 class FundAnalyzerAgent:
     """基本面分析Agent类（支持多模型/财务数据/估值分析）"""
     
     def __init__(self, model_name: str = DEFAULT_MODEL, data_fetcher: Optional[DataFetcherAgent] = None):
         self.model_name = model_name.lower()
-        self.client = self._init_llm_client()
+        self.client = get_llm_client(self.model_name)
         self.ts_pro = self._init_tushare()
         self.data_fetcher = data_fetcher
 
     def _init_tushare(self) -> Optional[ts.pro_api]:
-        """初始化Tushare客户端（单独抽离，逻辑更清晰）"""
         try:
             if env_config.TUSHARE_TOKEN:
                 ts.set_token(env_config.TUSHARE_TOKEN)
@@ -56,31 +41,14 @@ class FundAnalyzerAgent:
             logger.warning(f"Tushare初始化失败: {e}")
         return None
 
-    def _init_llm_client(self) -> OpenAI:
-        """初始化大模型客户端（统一配置映射）"""
-        if not env_config.check_model_config(self.model_name):
-            raise ValueError(f"❌ {self.model_name}模型的API Key未配置！")
-        
-        if self.model_name not in MODEL_CONFIG_MAP:
-            raise ValueError(f"❌ 暂不支持的模型：{self.model_name}")
-        
-        config = MODEL_CONFIG_MAP[self.model_name]
-        return OpenAI(api_key=config["api_key"], base_url=config["base_url"])
-
-    def _get_model_id(self) -> str:
-        """获取模型ID（从统一配置映射中读取）"""
-        return MODEL_CONFIG_MAP[self.model_name]["model_id"]
-
     def analyze_fund(self, stock_code: str, fundamental_data: Optional[Dict] = None) -> str:
         """生成机构级基本面分析报告"""
-        # 1. 获取基本面数据（优先使用传入的数据，否则自己获取）
         fund_data = fundamental_data
         if fund_data is None:
             if self.data_fetcher is None:
                 self.data_fetcher = DataFetcherAgent(stock_code)
             fund_data = self.data_fetcher.get_fundamental_data()
         
-        # 2. 构造专业Prompt（格式化优化，减少冗余换行）
         prompt = f"""
 # A股基本面量化分析指令（公募基金投研标准 V2.0）
 你是任职于头部公募基金的行业首席分析师，拥有15年A股消费/制造/科技等行业基本面研究经验，需基于{stock_code}的完整财务&行业数据，完成「量化可验证、逻辑可推导、结论可落地」的机构级基本面分析。
@@ -149,11 +117,10 @@ class FundAnalyzerAgent:
 6. 纯文本输出，无需markdown格式，分点使用「-」，避免表格/图表。
         """
         
-        # 3. 调用大模型生成报告
         logger.info(f"调用{self.model_name}模型生成基本面分析报告")
         try:
             completion = self.client.chat.completions.create(
-                model=self._get_model_id(),
+                model=get_model_id(self.model_name),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=LLM_TEMPERATURE,
                 max_tokens=REPORT_MAX_TOKENS,
@@ -162,25 +129,22 @@ class FundAnalyzerAgent:
             report = completion.choices[0].message.content.strip()
             logger.info("基本面分析报告生成完成")
             return report
-        
         except Exception as e:
             logger.error(f"生成{stock_code}基本面报告失败：{str(e)}")
             raise Exception(f"生成基本面报告失败：{str(e)}")
 
-# 供LangGraph调用的节点函数
 def fund_analyzer_node(state: dict) -> dict:
     stock_code = state["stock_code"]
     fundamental_data = state.get("fundamental_data", None)
     agent = FundAnalyzerAgent(model_name=DEFAULT_MODEL)
-    fund_report = agent.analyze_fund(stock_code)
+    fund_report = agent.analyze_fund(stock_code, fundamental_data)
     state["fund_report"] = fund_report
     return state
 
-# 测试代码（优化异常捕获，增强可读性）
 if __name__ == "__main__":
     try:
         agent = FundAnalyzerAgent(model_name=DEFAULT_MODEL)
-        report = agent.analyze_fund("600519")  # 贵州茅台
+        report = agent.analyze_fund("600519")
         print("\n" + "="*80)
         print("【600519 机构级基本面分析报告】")
         print("="*80)

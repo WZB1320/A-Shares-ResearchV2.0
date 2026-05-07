@@ -5,16 +5,6 @@ from typing import Optional, List, Dict
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-"""
-技术面分析Agent - A股投研系统核心模块（机构级量化版）
-作用：分析A股量价、趋势、技术指标，生成技术面投研报告
-"""
-from config.env_config import env_config
-from openai import OpenAI
-from agents.data_fetcher import DataFetcherAgent
-import pandas as pd
-
-# 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format="[%(name)s] %(asctime)s - %(message)s",
@@ -22,40 +12,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger("技术面Agent")
 
-# 常量
-DEFAULT_MODEL = "qwen"
+from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
+from agents.data_fetcher import DataFetcherAgent
+import pandas as pd
+
 REPORT_MAX_TOKENS = 1200
 LLM_TEMPERATURE = 0.5
 
-# 统一模型配置
-MODEL_CONFIG_MAP = {
-    "qwen": {"api_key": env_config.QWEN_API_KEY, "base_url": env_config.QWEN_BASE_URL, "model_id": "qwen-plus"},
-    "deepseek": {"api_key": env_config.DEEPSEEK_API_KEY, "base_url": env_config.DEEPSEEK_BASE_URL, "model_id": "deepseek-chat"},
-    "ernie": {"api_key": env_config.ERNIE_API_KEY, "base_url": env_config.ERNIE_BASE_URL, "model_id": "ernie-4.0"},
-    "spark": {"api_key": env_config.SPARK_API_KEY, "base_url": env_config.SPARK_BASE_URL, "model_id": "Spark-4.0"},
-    "hunyuan": {"api_key": env_config.HUNYUAN_API_KEY, "base_url": env_config.HUNYUAN_BASE_URL, "model_id": "hunyuan-pro"},
-    "doubao": {"api_key": env_config.DOUBAO_API_KEY, "base_url": env_config.DOUBAO_BASE_URL, "model_id": "doubao-pro"}
-}
-
 class TechAnalyzerAgent:
     """技术面分析Agent类（支持多模型/全量技术指标/可视化）"""
-    def __init__(self, model_name: str = "qwen", data_fetcher: Optional[DataFetcherAgent] = None):
+    def __init__(self, model_name: str = DEFAULT_MODEL, data_fetcher: Optional[DataFetcherAgent] = None):
         self.model_name = model_name.lower()
-        self.client = self._init_llm_client()
+        self.client = get_llm_client(self.model_name)
         self.data_fetcher = data_fetcher
-
-    def _init_llm_client(self) -> OpenAI:
-        """初始化大模型客户端（全模型兼容）"""
-        if self.model_name not in MODEL_CONFIG_MAP:
-            raise ValueError(f"❌ 不支持的模型：{self.model_name}")
-        
-        config = MODEL_CONFIG_MAP[self.model_name]
-        self.model_id = config["model_id"]
-        return OpenAI(api_key=config["api_key"], base_url=config["base_url"])
 
     def analyze_tech(self, stock_code: str, tech_data: Optional[List[Dict]] = None) -> str:
         """生成机构级技术面分析报告"""
-        # 1. 获取技术面数据（优先使用传入的数据，否则自己获取）
         if tech_data is None:
             if self.data_fetcher is None:
                 self.data_fetcher = DataFetcherAgent(stock_code)
@@ -64,12 +36,9 @@ class TechAnalyzerAgent:
             df = pd.DataFrame(tech_data)
         
         latest = df.iloc[-1]
-        
-        # 2. 构造数据字符串（修复data_str问题）
         recent_data = df.tail(30).to_dict("records")
         data_str = f"最新数据点：{latest.to_dict()}\n近30天数据摘要：{len(recent_data)}条记录"
         
-        # 3. 构造专业Prompt
         prompt = f"""
 # A股技术面量化分析指令（机构级标准）
 你是拥有10年以上A股量化投研经验的技术分析专家，需基于{stock_code}的最新30天行情数据（含完整量化指标），完成多维度专业分析，要求逻辑可验证、结论有数据支撑、适配A股交易规则（T+1、涨跌停、主力资金等）。
@@ -111,10 +80,9 @@ class TechAnalyzerAgent:
 4. 总字数控制在800-1200字，重点突出，无关信息省略；
 5. 纯文本输出，无需markdown格式（方便后续整合报告）。
 """
-        # 4. 调用LLM生成报告
         try:
             completion = self.client.chat.completions.create(
-                model=self.model_id,
+                model=get_model_id(self.model_name),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=LLM_TEMPERATURE,
                 max_tokens=REPORT_MAX_TOKENS
@@ -127,18 +95,17 @@ class TechAnalyzerAgent:
             logger.error(error_msg)
             return f"⚠️ {error_msg}"
 
-# 供LangGraph调用的节点函数
 def tech_analyzer_node(state: dict) -> dict:
     stock_code = state["stock_code"]
     tech_data = state.get("tech_data", None)
-    agent = TechAnalyzerAgent(model_name="qwen")
+    agent = TechAnalyzerAgent(model_name=DEFAULT_MODEL)
     tech_report = agent.analyze_tech(stock_code, tech_data)
     state["tech_report"] = tech_report
     return state
 
 if __name__ == "__main__":
     try:
-        agent = TechAnalyzerAgent(model_name="qwen")
+        agent = TechAnalyzerAgent(model_name=DEFAULT_MODEL)
         report = agent.analyze_tech("600519")
         print("\n" + "="*80)
         print("【600519 技术面分析报告】")
