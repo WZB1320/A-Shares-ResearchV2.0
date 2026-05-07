@@ -4,9 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI 智能投研 </title>
+    <!-- 字体加载策略：国内环境可能无法访问Google Fonts，添加系统字体回退 -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700;900&family=DM+Sans:wght@300;400;500;600;700&family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- 国内CDN回退 -->
+    <link href="https://fonts.loli.net/css2?family=Playfair+Display:wght@400;600;700;900&family=DM+Sans:wght@300;400;500;600;700&family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg-deep: #0a0e17;
@@ -434,6 +437,137 @@
             font-weight: 700;
         }
 
+        /* Agent选择模块 */
+        .agent-section {
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        .agent-section .input-label {
+            margin-bottom: 14px;
+        }
+
+        .agent-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+
+        .agent-option {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 14px;
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: all 0.25s ease;
+            user-select: none;
+        }
+
+        .agent-option:hover {
+            border-color: var(--border-active);
+            background: rgba(212, 175, 55, 0.06);
+        }
+
+        .agent-option input[type="checkbox"] {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .agent-checkmark {
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--text-muted);
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+        }
+
+        .agent-checkmark::after {
+            content: '';
+            width: 8px;
+            height: 5px;
+            border-left: 2px solid var(--bg-deep);
+            border-bottom: 2px solid var(--bg-deep);
+            transform: rotate(-45deg) scale(0);
+            transition: transform 0.2s ease;
+            margin-bottom: 2px;
+        }
+
+        .agent-option input[type="checkbox"]:checked + .agent-checkmark {
+            background: var(--accent-gold);
+            border-color: var(--accent-gold);
+        }
+
+        .agent-option input[type="checkbox"]:checked + .agent-checkmark::after {
+            transform: rotate(-45deg) scale(1);
+        }
+
+        .agent-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .agent-name {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.3;
+        }
+
+        .agent-desc {
+            font-size: 11px;
+            color: var(--text-muted);
+            line-height: 1.3;
+        }
+
+        .agent-option input[type="checkbox"]:checked ~ .agent-info .agent-name {
+            color: var(--accent-gold-light);
+        }
+
+        .agent-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        .agent-action-btn {
+            padding: 6px 14px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-family: var(--font-body);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.25s ease;
+        }
+
+        .agent-action-btn:hover {
+            border-color: var(--border-active);
+            color: var(--accent-gold);
+            background: var(--accent-gold-dim);
+        }
+
+        @media (max-width: 768px) {
+            .agent-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
         .features-row {
             display: flex;
             gap: 24px;
@@ -799,6 +933,68 @@
                         <span class="icon-info">i</span>
                         支持沪深A股6位证券代码，如 600519（贵州茅台）、000858（五粮液）、300750（宁德时代）
                     </div>
+
+                    <!-- Agent选择模块 -->
+                    <div class="agent-section">
+                        <div class="input-label">
+                            <span class="dot"></span>
+                            分析维度选择
+                        </div>
+                        <div class="agent-grid">
+                            <label class="agent-option">
+                                <input type="checkbox" name="agents" value="tech" {% if 'tech' in selected_agents %}checked{% endif %}>
+                                <span class="agent-checkmark"></span>
+                                <div class="agent-info">
+                                    <span class="agent-name">技术面分析</span>
+                                    <span class="agent-desc">均线/MACD/KDJ/布林带</span>
+                                </div>
+                            </label>
+                            <label class="agent-option">
+                                <input type="checkbox" name="agents" value="fund" {% if 'fund' in selected_agents %}checked{% endif %}>
+                                <span class="agent-checkmark"></span>
+                                <div class="agent-info">
+                                    <span class="agent-name">基本面分析</span>
+                                    <span class="agent-desc">盈利能力/成长性/杜邦分析</span>
+                                </div>
+                            </label>
+                            <label class="agent-option">
+                                <input type="checkbox" name="agents" value="capital" {% if 'capital' in selected_agents %}checked{% endif %}>
+                                <span class="agent-checkmark"></span>
+                                <div class="agent-info">
+                                    <span class="agent-name">资金面分析</span>
+                                    <span class="agent-desc">北向资金/主力/融资融券</span>
+                                </div>
+                            </label>
+                            <label class="agent-option">
+                                <input type="checkbox" name="agents" value="industry" {% if 'industry' in selected_agents %}checked{% endif %}>
+                                <span class="agent-checkmark"></span>
+                                <div class="agent-info">
+                                    <span class="agent-name">行业面分析</span>
+                                    <span class="agent-desc">行业周期/竞争格局/政策</span>
+                                </div>
+                            </label>
+                            <label class="agent-option">
+                                <input type="checkbox" name="agents" value="risk" {% if 'risk' in selected_agents %}checked{% endif %}>
+                                <span class="agent-checkmark"></span>
+                                <div class="agent-info">
+                                    <span class="agent-name">风险面分析</span>
+                                    <span class="agent-desc">质押风险/财务风险/经营风险</span>
+                                </div>
+                            </label>
+                            <label class="agent-option">
+                                <input type="checkbox" name="agents" value="valuation" {% if 'valuation' in selected_agents %}checked{% endif %}>
+                                <span class="agent-checkmark"></span>
+                                <div class="agent-info">
+                                    <span class="agent-name">估值面分析</span>
+                                    <span class="agent-desc">PE/PB/DCF/相对估值</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="agent-actions">
+                            <button type="button" class="agent-action-btn" onclick="selectAllAgents()">全选</button>
+                            <button type="button" class="agent-action-btn" onclick="clearAllAgents()">清空</button>
+                        </div>
+                    </div>
                 </form>
             </section>
 
@@ -865,6 +1061,27 @@
             this.value = this.value.replace(/\D/g, '').slice(0, 6);
         });
 
+        // 页面加载时恢复Agent选择状态（从模板变量或URL参数）
+        document.addEventListener('DOMContentLoaded', function() {
+            // 优先使用后端传入的selected_agents（Jinja2模板渲染时）
+            const backendSelectedAgents = {{ selected_agents | default([]) | tojson }};
+            if (backendSelectedAgents && backendSelectedAgents.length > 0) {
+                document.querySelectorAll('.agent-option input[type="checkbox"]').forEach(cb => {
+                    cb.checked = backendSelectedAgents.includes(cb.value);
+                });
+                return;
+            }
+            
+            // 降级：从URL参数读取（直接访问时）
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlSelectedAgents = urlParams.getAll('agents');
+            if (urlSelectedAgents.length > 0) {
+                document.querySelectorAll('.agent-option input[type="checkbox"]').forEach(cb => {
+                    cb.checked = urlSelectedAgents.includes(cb.value);
+                });
+            }
+        });
+
         form.addEventListener('submit', function (e) {
             const val = input.value.trim();
             if (!/^\d{6}$/.test(val)) {
@@ -877,6 +1094,14 @@
                 }, 2000);
                 return;
             }
+            
+            const selectedAgents = document.querySelectorAll('.agent-option input[type="checkbox"]:checked');
+            if (selectedAgents.length === 0) {
+                e.preventDefault();
+                alert('请至少选择一个分析维度');
+                return;
+            }
+            
             loadingOverlay.classList.add('active');
             inputCard.classList.add('loading');
         });
@@ -931,6 +1156,19 @@
                 btn.innerHTML = originalText;
                 btn.classList.remove('success');
             }, 2000);
+        }
+
+        // Agent选择功能
+        function selectAllAgents() {
+            document.querySelectorAll('.agent-option input[type="checkbox"]').forEach(cb => {
+                cb.checked = true;
+            });
+        }
+
+        function clearAllAgents() {
+            document.querySelectorAll('.agent-option input[type="checkbox"]').forEach(cb => {
+                cb.checked = false;
+            });
         }
     </script>
 </body>

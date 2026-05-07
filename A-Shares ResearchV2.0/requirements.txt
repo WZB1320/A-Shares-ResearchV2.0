@@ -1,24 +1,37 @@
 # 核心数据处理
-pandas>=2.0.0
-numpy>=1.24.0
+# 注意：Python 3.13 需要 numpy 2.1.0+
+numpy>=2.1.0
+pandas>=2.2.0
 
 # A股数据接口
-akshare>=1.0.0
+akshare>=1.10.0
 tushare>=1.2.89
+requests>=2.31.0
 
 # 可视化
 matplotlib>=3.7.0
 
 # 配置文件读取
 python-dotenv>=1.0.0
-openai>=1.0.0
- 
- 
-langgraph>=0.1.0
+
+# LLM客户端
+openai>=1.12.0
+
+# LangGraph工作流
+langgraph>=0.2.0
 langchain>=0.2.0
-tushare>=1.2.89
+langchain-core>=0.2.0
+
+# 类型支持
+typing-extensions>=4.8.0
+
+# 数据验证
+pydantic>=2.0.0
 
 # FastAPI Web服务
 fastapi>=0.100.0
 uvicorn>=0.20.0
 jinja2>=3.1.0
+
+# 异步支持
+aiohttp>=3.9.0
