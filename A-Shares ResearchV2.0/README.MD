@@ -88,17 +88,17 @@ A-Shares-ResearchV3.0-Harness/
 │   ├── __init__.py
 │   │
 │   ├── skills/            # Skill 层：机构级纯计算规则
-   │   ├── __init__.py
-   │   ├── tech_skill.py      # 技术面：多指标系统（MA趋势/MACD/KDJ/布林带/成交量结构/趋势强度分级）
-   │   ├── fund_skill.py      # 基本面：杜邦分析体系（ROE拆解/盈利质量/现金流质量/营运效率/成长持续性）
-   │   ├── capital_skill.py   # 资金面：多维度资金监控（北向资金/主力资金/融资融券/龙虎榜机构动向）
-   │   ├── industry_skill.py  # 行业面：产业链分析（行业周期/上下游景气度/竞争格局/政策环境）
-   │   ├── valuation_skill.py # 估值面：多维估值体系（绝对估值/历史分位/相对估值/DCF模型/股息率）
-   │   └── risk_skill.py      # 风险面：全面风险扫描（质押风险/减持风险/财务风险/经营风险/市场风险/治理风险）
+│   │   ├── __init__.py
+│   │   ├── tech_skill.py      # 技术面：多指标系统（MA趋势/MACD/KDJ/布林带/成交量结构/趋势强度分级）
+│   │   ├── fund_skill.py      # 基本面：杜邦分析体系（ROE拆解/盈利质量/现金流质量/营运效率/成长持续性）
+│   │   ├── capital_skill.py   # 资金面：多维度资金监控（北向资金/主力资金/融资融券/龙虎榜机构动向）
+│   │   ├── industry_skill.py  # 行业面：产业链分析（行业周期/上下游景气度/竞争格局/政策环境）
+│   │   ├── valuation_skill.py # 估值面：多维估值体系（绝对估值/历史分位/相对估值/DCF模型/股息率）
+│   │   └── risk_skill.py      # 风险面：全面风险扫描（质押风险/减持风险/财务风险/经营风险/市场风险/治理风险）
 │   │
 │   ├── connectors/       # Connector 层：唯一数据入口
 │   │   ├── __init__.py
-│   │   ├── data_connector.py  # 统一数据获取（akshare封装）
+│   │   ├── data_connector.py  # 统一数据获取（多数据源：akshare + tushare，自动降级）
 │   │   └── tool_connector.py  # 工具调用封装
 │   │
 │   └── agents/            # Agent 层：纯执行
@@ -171,7 +171,7 @@ python test_architecture.py
 
 ### 数据源
 
-默认使用 AkShare 免费数据源，已在 `layers/connectors/data_connector.py` 统一管理。
+默认使用 AkShare 免费数据源，同时支持 Tushare Pro（需配置 Token）。系统自动检测可用数据源并在失败时自动降级切换，详见 `layers/connectors/data_connector.py`。
 
 ## 六、Agent分析维度说明
 

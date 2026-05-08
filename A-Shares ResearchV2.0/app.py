@@ -3,7 +3,18 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from typing import List
 import sys
-sys.path.append(".")
+import logging
+from pathlib import Path
+
+# 集中式路径初始化
+sys.path.insert(0, str(Path(__file__).parent))
+
+# 集中式日志初始化（全局唯一 basicConfig）
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(name)s] %(asctime)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
 from layers.agents.chief_agent import ChiefAgent
 
@@ -20,16 +31,18 @@ def get_reviewer():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "selected_agents": ["tech", "fund", "capital", "industry", "risk", "valuation"]
+    })
 
 @app.post("/generate", response_class=HTMLResponse)
 def generate(request: Request, stock_code: str = Form(...), agents: List[str] = Form(None)):
     try:
         reviewer = get_reviewer()
-        # 如果没有选择Agent，默认全选
         selected_agents = agents if agents else ["tech", "fund", "capital", "industry", "risk", "valuation"]
-        result = reviewer.analyze(stock_code, selected_agents=selected_agents)
-        report = result.get("final_report", "生成失败")
+        state = {"selected_agents": selected_agents}
+        report = reviewer.analyze(stock_code, state)
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()

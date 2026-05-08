@@ -1,19 +1,26 @@
 import sys
+import logging
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(name)s] %(asctime)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
 from layers.agents.chief_agent import ChiefAgent
 from graph.workflow import run_workflow
 
 
-def run_simple_mode(stock_code: str):
+def run_simple_mode(stock_code: str, selected_agents: list = None):
     print("\n" + "="*80)
     print("[Harness架构] 简单模式 - ChiefAgent")
     print("="*80)
     print("\n首席Agent正在进行完整分析...")
 
     agent = ChiefAgent()
-    result = agent.analyze(stock_code)
+    result = agent.analyze(stock_code, selected_agents=selected_agents)
 
     print("\n" + "="*80)
     print(f"【{stock_code} 完整投研报告】")
@@ -39,10 +46,13 @@ def run_simple_mode(stock_code: str):
     return result
 
 
-def run_harness_mode(stock_code: str):
+def run_harness_mode(stock_code: str, selected_agents: list = None):
     print("\n" + "="*80)
     print("[Harness架构] 调度器模式")
     print("="*80)
+
+    if selected_agents is None:
+        selected_agents = ["tech", "fund", "capital", "industry", "risk", "valuation"]
 
     from harness.scheduler import HarnessScheduler, SchedulerConfig
     from harness.state import HarnessStateManager
@@ -75,12 +85,12 @@ def run_harness_mode(stock_code: str):
         "financial_data": all_data.get("financial_data", {})
     }
 
-    tech_report = TechAgent().analyze(stock_code, state["tech_data"])
-    fund_report = FundAgent().analyze(stock_code, state["fundamental_data"])
-    capital_report = CapitalAgent().analyze(stock_code, state["capital_data"])
-    industry_report = IndustryAgent().analyze(stock_code, state["fundamental_data"])
-    risk_report = RiskAgent().analyze(stock_code, state["financial_data"])
-    valuation_report = ValuationAgent().analyze(stock_code, state["valuation_data"], state["fundamental_data"])
+    tech_report = TechAgent().analyze(stock_code, state["tech_data"]) if "tech" in selected_agents else "【未选择技术面分析】"
+    fund_report = FundAgent().analyze(stock_code, state["fundamental_data"]) if "fund" in selected_agents else "【未选择基本面分析】"
+    capital_report = CapitalAgent().analyze(stock_code, state["capital_data"]) if "capital" in selected_agents else "【未选择资金面分析】"
+    industry_report = IndustryAgent().analyze(stock_code, state["fundamental_data"]) if "industry" in selected_agents else "【未选择行业面分析】"
+    risk_report = RiskAgent().analyze(stock_code, state["financial_data"]) if "risk" in selected_agents else "【未选择风险面分析】"
+    valuation_report = ValuationAgent().analyze(stock_code, state["valuation_data"], state["fundamental_data"]) if "valuation" in selected_agents else "【未选择估值面分析】"
 
     result = {
         "stock_code": stock_code,

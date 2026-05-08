@@ -1,7 +1,3 @@
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
-
 from config.env_config import env_config
 from openai import OpenAI
 
@@ -32,14 +28,3 @@ def get_model_id(model_name: str = DEFAULT_MODEL) -> str:
     return MODEL_CONFIG_MAP[model_name]["model_id"]
 
 llm_client = get_llm_client()
-
-try:
-    from langchain_openai import ChatOpenAI
-    llm = ChatOpenAI(
-        model=MODEL_CONFIG_MAP[DEFAULT_MODEL]["model_id"],
-        api_key=MODEL_CONFIG_MAP[DEFAULT_MODEL]["api_key"],
-        base_url=MODEL_CONFIG_MAP[DEFAULT_MODEL]["base_url"],
-        temperature=0.7
-    )
-except ImportError:
-    llm = None

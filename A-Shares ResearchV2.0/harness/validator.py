@@ -3,13 +3,6 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("Harness-Validator")
 
 

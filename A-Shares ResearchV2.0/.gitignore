@@ -7,4 +7,6 @@ dist/
 build/
 .venv/
 venv/
-.env
+checkpoints/
+logs/
+.trae/

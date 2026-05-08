@@ -1,5 +1,10 @@
+"""
+LangGraph 工作流 - 兼容备用层
+注意：主流程已迁移至 Anthropic Harness 架构（app.py + ChiefAgent），
+此文件仅作为兼容备用，推荐使用 Web 端或 ChiefAgent 直接调用。
+"""
 from langgraph.graph import StateGraph, END
-from typing import Dict, TypedDict, Optional
+from typing import Dict, TypedDict, Optional, List
 
 from layers.agents.data_agent import data_agent_node
 from layers.agents.tech_agent import tech_agent_node
@@ -13,6 +18,7 @@ from layers.agents.chief_agent import chief_agent_node
 
 class AgentState(TypedDict):
     stock_code: str
+    selected_agents: Optional[List[str]]
     basic_info: Optional[Dict]
     capital_data: Optional[Dict]
     fundamental_data: Optional[Dict]
@@ -61,11 +67,15 @@ def create_workflow():
     return workflow.compile()
 
 
-def run_workflow(stock_code: str) -> Dict:
+def run_workflow(stock_code: str, selected_agents: List[str] = None) -> Dict:
+    if selected_agents is None:
+        selected_agents = ["tech", "fund", "capital", "industry", "risk", "valuation"]
+
     app = create_workflow()
 
     initial_state = {
         "stock_code": stock_code,
+        "selected_agents": selected_agents,
         "basic_info": None,
         "capital_data": None,
         "fundamental_data": None,

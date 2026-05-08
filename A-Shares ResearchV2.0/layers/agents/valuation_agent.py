@@ -3,18 +3,11 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("ValuationAgent")
 
 from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
-from layers.skills import ValuationSkill, valuation_skill
+from layers.skills.valuation_skill import ValuationSkill, valuation_skill
 
 REPORT_MAX_TOKENS = 1800
 LLM_TEMPERATURE = 0.3
@@ -22,7 +15,7 @@ LLM_TEMPERATURE = 0.3
 
 class ValuationAgent:
     """
-    估值Agent - 纯执行层（机构级）
+    估值面Agent - 纯执行层（机构级标准化）
     职责：调用 ValuationSkill 进行机构级估值分析 + LLM 生成机构级研报
     """
 
@@ -32,71 +25,79 @@ class ValuationAgent:
         self.data_connector = data_connector
         self.valuation_skill = valuation_skill
 
-    def analyze(self, stock_code: str, valuation_data: Optional[Dict] = None, fundamental_data: Optional[Dict] = None) -> str:
+    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> str:
         logger.info(f"[ValuationAgent] 开始机构级估值分析: {stock_code}")
 
-        if valuation_data is None or fundamental_data is None:
-            if self.data_connector is None:
-                self.data_connector = DataConnector(stock_code)
-            if valuation_data is None:
-                valuation_data = self.data_connector.fetch_valuation_data()
-            if fundamental_data is None:
-                fundamental_data = self.data_connector.fetch_fundamental_data()
+        valuation_data = None
+        fundamental_data = None
+        if state is not None:
+            valuation_data = state.get("valuation_data")
+            fundamental_data = state.get("fundamental_data") or state.get("financial_data")
 
-        signals = self.valuation_skill.analyze(valuation_data, fundamental_data)
+        if valuation_data is None and self.data_connector is not None:
+            valuation_data = self.data_connector.fetch_valuation_data()
+        if fundamental_data is None and self.data_connector is not None:
+            fundamental_data = self.data_connector.fetch_fundamental_data()
 
-        prompt = f"""
-# A股估值量化分析指令（券商研究所标准）
-你是任职于头部券商研究所的估值首席分析师，拥有15年以上A股估值研究经验，精通DCF模型、相对估值法、绝对估值法等多种估值框架。
+        if valuation_data is None:
+            logger.warning(f"[ValuationAgent] 无估值数据: {stock_code}")
+            return f"⚠️ {stock_code} 估值数据不可用，无法生成分析报告"
 
-## 一、绝对估值指标
-- PE_TTM={signals.absolute.pe_ttm}，PE_LYR={signals.absolute.pe_lyr}
-- PB={signals.absolute.pb}，PS={signals.absolute.ps}
-- EV/EBITDA={signals.absolute.ev_ebitda}
-- PEG={signals.absolute.peg}
-- 股息率={signals.absolute.dividend_yield}%
+        try:
+            signals = self.valuation_skill.analyze(valuation_data, fundamental_data)
+        except Exception as e:
+            error_msg = f"估值指标计算失败：{str(e)}"
+            logger.error(f"[ValuationAgent] {error_msg}")
+            return f"⚠️ {stock_code} {error_msg}"
 
-## 二、历史估值分位
-- PE 5年分位={signals.historical.pe_5y_percentile}%，PE 10年分位={signals.historical.pe_10y_percentile}%
-- PB 5年分位={signals.historical.pb_5y_percentile}%，PB 10年分位={signals.historical.pb_10y_percentile}%
-- PS 5年分位={signals.historical.ps_5y_percentile}%
-- 历史估值状态：{signals.historical.historical_status}
+        prompt = f"""你是一位资深券商估值分析师，请基于以下机构级估值分析数据，撰写一份专业的估值研判报告。
 
-## 三、相对估值
-- 相对行业PE={signals.relative.vs_industry_pe_pct}%
-- 相对行业PB={signals.relative.vs_industry_pb_pct}%
-- 相对行业PS={signals.relative.vs_industry_ps_pct}%
-- 相对历史PE={signals.relative.vs_historical_pe_pct}%
-- 相对历史PB={signals.relative.vs_historical_pb_pct}%
-- 相对估值状态：{signals.relative.relative_status}
+股票代码：{stock_code}
 
-## 四、DCF估值模型
-- WACC={signals.dcf.wacc}%，永续增长率={signals.dcf.terminal_growth}%
-- 预测期FCF={signals.dcf.projected_fcf}
-- 每股合理价值={signals.dcf.fair_value}
-- 隐含上行/下行空间={signals.dcf.upside_downside}%
-- DCF可靠性：{signals.dcf.dcf_reliability}
+【绝对估值】
+PE(TTM)：{signals.absolute.pe if hasattr(signals.absolute, 'pe') else 'N/A'}
+PB：{signals.absolute.pb if hasattr(signals.absolute, 'pb') else 'N/A'}
+PS：{signals.absolute.ps if hasattr(signals.absolute, 'ps') else 'N/A'}
+EV/EBITDA：{signals.absolute.ev_ebitda if hasattr(signals.absolute, 'ev_ebitda') else 'N/A'}
+PEG：{signals.absolute.peg if hasattr(signals.absolute, 'peg') else 'N/A'}
 
-## 五、综合评估
-- 综合评分：{signals.overall_score}/100
-- 估值水平：{signals.valuation_level.value}
-- 风险预警：{signals.risk_warning}
-- 投资建议：{signals.research_advice}
+【历史分位（10年维度）】
+PE 10年分位：{signals.percentile.pe_10y_percentile if hasattr(signals.percentile, 'pe_10y_percentile') else 'N/A'}%
+PB 10年分位：{signals.percentile.pb_10y_percentile if hasattr(signals.percentile, 'pb_10y_percentile') else 'N/A'}%
+PE 5年分位：{signals.percentile.pe_5y_percentile if hasattr(signals.percentile, 'pe_5y_percentile') else 'N/A'}%
+PE 3年分位：{signals.percentile.pe_3y_percentile if hasattr(signals.percentile, 'pe_3y_percentile') else 'N/A'}%
 
-## 输出要求（机构研报标准）
-1. 绝对估值分析：PE/PB/PS/EV-EBITDA的绝对水平与行业对比
-2. 历史估值定位：5年/10年分位的投资含义、均值回归概率
-3. 相对估值判断：vs行业/vs历史的溢价/折价逻辑
-4. DCF模型深度：WACC假设、永续增长率敏感性、合理价值区间
-5. 估值安全边际：下行风险测算、极端情景估值
-6. 估值投资建议：基于多维度估值的综合判断、目标价区间
-- 核心数据用【】标注，解释估值分位的投资含义
-- 总字数1200-1800字，纯文本输出
-"""
+【相对估值】
+PE相对行业溢价率：{signals.relative.pe_premium if hasattr(signals.relative, 'pe_premium') else 'N/A'}%
+PB相对行业溢价率：{signals.relative.pb_premium if hasattr(signals.relative, 'pb_premium') else 'N/A'}%
+
+【风险预警】
+{signals.risk_warning if hasattr(signals, 'risk_warning') else '无'}
+
+【机构建议】
+{signals.research_advice if hasattr(signals, 'research_advice') else '无'}
+
+【估值综合评分】
+评分：{signals.overall_score:.1f}/100
+评级：{signals.valuation_level}
+
+请按以下结构输出报告（800-1000字）：
+1. 绝对估值评估（PE/PB/PS/EV-EBITDA/PEG多维度）
+2. 历史分位分析（以10年分位为核心，辅以3年/5年分位）
+3. 相对估值对比（PE/PB相对行业溢价率）
+4. 股票风格适配（成长/价值/周期股PEG规则）
+5. 风险预警（高估值泡沫/低估值陷阱识别）
+6. 综合估值评级与配置建议
+
+要求：专业、客观、数据驱动，使用机构级术语。"""
+
         try:
             completion = self.client.chat.completions.create(
                 model=get_model_id(self.model_name),
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": "你是一位资深券商估值分析师，擅长多维度估值分析和历史分位研判。请用专业、客观的语言撰写报告。"},
+                    {"role": "user", "content": prompt}
+                ],
                 temperature=LLM_TEMPERATURE,
                 max_tokens=REPORT_MAX_TOKENS
             )
@@ -111,10 +112,8 @@ class ValuationAgent:
 
 def valuation_agent_node(state: dict) -> dict:
     stock_code = state["stock_code"]
-    valuation_data = state.get("valuation_data", None)
-    fundamental_data = state.get("fundamental_data", None)
     agent = ValuationAgent(model_name=DEFAULT_MODEL)
-    valuation_report = agent.analyze(stock_code, valuation_data, fundamental_data)
+    valuation_report = agent.analyze(stock_code, state)
     state["valuation_report"] = valuation_report
     return state
 

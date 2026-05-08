@@ -5,9 +5,6 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(level=logging.INFO, format="[%(name)s] %(asctime)s - %(message)s")
 logger = logging.getLogger("CapitalSkill")
 
 
@@ -68,6 +65,10 @@ class DragonMetrics:
     institutional_sell_ratio: float
     net_institutional_flow: float
     top5_seat_ratio: float
+    institutional_buy_pct: float
+    retail_buy_pct: float
+    consecutive_days: int
+    top_buyer_type: str
     signal: str
     hot_money_trace: str
 
@@ -93,6 +94,7 @@ class CapitalSignals:
     capital_grade: str
     risk_signal: str
     research_advice: str
+    divergence_signals: list
 
 
 class CapitalSkill:
@@ -111,19 +113,26 @@ class CapitalSkill:
 
     @staticmethod
     def _extract_value(data_item, key: str = None) -> float:
+        if data_item is None:
+            return 0.0
         if isinstance(data_item, dict):
+            if not data_item:
+                return 0.0
             if key and key in data_item:
                 return CapitalSkill._safe_float(data_item[key])
             for k, v in data_item.items():
-                if "净" in k or "流入" in k or "额" in k:
+                if isinstance(v, (int, float)) and ("净" in str(k) or "流入" in str(k) or "额" in str(k)):
                     return CapitalSkill._safe_float(v)
-            return CapitalSkill._safe_float(list(data_item.values())[0]) if data_item else 0
+            numeric_vals = [v for v in data_item.values() if isinstance(v, (int, float))]
+            return CapitalSkill._safe_float(numeric_vals[0]) if numeric_vals else 0.0
+        if isinstance(data_item, (list, tuple)):
+            return CapitalSkill._safe_float(data_item[0]) if len(data_item) > 0 else 0.0
         return CapitalSkill._safe_float(data_item)
 
     @staticmethod
     def analyze_north_flow(capital_data: Dict) -> NorthFlowMetrics:
         north = capital_data.get("north", [])
-        if len(north) < 5:
+        if not isinstance(north, list) or len(north) < 5:
             return NorthFlowMetrics(0, 0, 0, 0, 0, "数据不足", "数据不足", "数据不足", "数据不足", 0)
 
         values = [CapitalSkill._extract_value(x) for x in north]
@@ -168,7 +177,7 @@ class CapitalSkill:
     @staticmethod
     def analyze_main_fund(capital_data: Dict) -> MainFundMetrics:
         main = capital_data.get("main", [])
-        if len(main) < 5:
+        if not isinstance(main, list) or len(main) < 5:
             return MainFundMetrics(0, 0, 0, 0, 0, 0, 0, "数据不足", "数据不足", "数据不足", "数据不足")
 
         values = [CapitalSkill._extract_value(x, "主力净流入") for x in main]
@@ -213,7 +222,7 @@ class CapitalSkill:
     @staticmethod
     def analyze_margin(capital_data: Dict) -> MarginMetrics:
         margin = capital_data.get("margin", [])
-        if len(margin) < 2:
+        if not isinstance(margin, list) or len(margin) < 2:
             return MarginMetrics(0, 0, 0, 0, 0, "数据不足", "低风险")
 
         latest_bal = CapitalSkill._extract_value(margin[-1], "融资余额")
@@ -256,8 +265,8 @@ class CapitalSkill:
     @staticmethod
     def analyze_dragon(capital_data: Dict) -> DragonMetrics:
         dragon = capital_data.get("dragon", [])
-        if not dragon:
-            return DragonMetrics(0, 0, 0, 0, 0, "无数据", "无游资痕迹")
+        if not isinstance(dragon, list) or not dragon:
+            return DragonMetrics(0, 0, 0, 0, 0, 0, 0, 0, "无数据", "无数据", "无游资痕迹")
 
         active_days = len(dragon)
         inst_buy = sum(CapitalSkill._safe_float(d.get("inst_buy", d.get("机构买入", 0))) for d in dragon)
@@ -266,6 +275,27 @@ class CapitalSkill:
 
         total_buy = sum(CapitalSkill._safe_float(d.get("total_buy", d.get("买入总计", 1))) for d in dragon)
         top5_ratio = (inst_buy / total_buy * 100) if total_buy > 0 else 0
+
+        retail_buy = sum(CapitalSkill._safe_float(d.get("retail_buy", d.get("游资买入", 0))) for d in dragon)
+        inst_buy_pct = (inst_buy / total_buy * 100) if total_buy > 0 else 0
+        retail_buy_pct = (retail_buy / total_buy * 100) if total_buy > 0 else 0
+
+        consecutive = 0
+        if dragon:
+            dates = sorted([d.get("date", d.get("日期", "")) for d in dragon], reverse=True)
+            consecutive = 1
+            for i in range(1, len(dates)):
+                if dates[i-1] and dates[i]:
+                    consecutive += 1
+                else:
+                    break
+
+        if inst_buy_pct > retail_buy_pct:
+            top_type = "机构主导"
+        elif retail_buy_pct > inst_buy_pct:
+            top_type = "游资主导"
+        else:
+            top_type = "均衡博弈"
 
         if net_inst > 0 and active_days >= 3:
             signal = "机构活跃"
@@ -287,6 +317,10 @@ class CapitalSkill:
             institutional_sell_ratio=round(inst_sell, 2),
             net_institutional_flow=round(net_inst, 2),
             top5_seat_ratio=round(top5_ratio, 2),
+            institutional_buy_pct=round(inst_buy_pct, 2),
+            retail_buy_pct=round(retail_buy_pct, 2),
+            consecutive_days=consecutive,
+            top_buyer_type=top_type,
             signal=signal,
             hot_money_trace=hot_money
         )
@@ -356,80 +390,154 @@ class CapitalSkill:
         )
 
     @staticmethod
+    def _empty_signals() -> "CapitalSignals":
+        return CapitalSignals(
+            north=NorthFlowMetrics(0, 0, 0, 0, 0, "无数据", "无数据", "无数据", "无数据", 0),
+            main=MainFundMetrics(0, 0, 0, 0, 0, 0, 0, "无数据", "无数据", "无数据", "无数据"),
+            margin=MarginMetrics(0, 0, 0, 0, 0, "无数据", "低风险"),
+            dragon=DragonMetrics(0, 0, 0, 0, 0, 0, 0, 0, "无数据", "无数据", "无数据"),
+            flow_structure=FundFlowStructure(
+                north_trend=CapitalTrend.NEUTRAL, main_trend=CapitalTrend.NEUTRAL,
+                margin_trend=CapitalTrend.NEUTRAL, dragon_trend=CapitalTrend.NEUTRAL,
+                consensus_level=0.5, divergence_warning="数据不足"
+            ),
+            overall_score=50, capital_grade="无评级", risk_signal="数据异常",
+            research_advice="数据不足，无法研判", divergence_signals=[]
+        )
+
+    @staticmethod
     def analyze(capital_data: Dict) -> CapitalSignals:
         logger.info("[CapitalSkill] 开始机构级资金面分析")
 
-        north = CapitalSkill.analyze_north_flow(capital_data)
-        main = CapitalSkill.analyze_main_fund(capital_data)
-        margin = CapitalSkill.analyze_margin(capital_data)
-        dragon = CapitalSkill.analyze_dragon(capital_data)
+        if not capital_data or not isinstance(capital_data, dict):
+            logger.warning("[CapitalSkill] capital_data为空或类型异常，返回默认空信号")
+            return CapitalSkill._empty_signals()
+
+        try:
+            north = CapitalSkill.analyze_north_flow(capital_data)
+        except Exception as e:
+            logger.error(f"[CapitalSkill] 北向资金分析异常: {e}")
+            north = NorthFlowMetrics(0, 0, 0, 0, 0, "异常", "异常", "异常", "异常", 0)
+
+        try:
+            main = CapitalSkill.analyze_main_fund(capital_data)
+        except Exception as e:
+            logger.error(f"[CapitalSkill] 主力资金分析异常: {e}")
+            main = MainFundMetrics(0, 0, 0, 0, 0, 0, 0, "异常", "异常", "异常", "异常")
+
+        try:
+            margin = CapitalSkill.analyze_margin(capital_data)
+        except Exception as e:
+            logger.error(f"[CapitalSkill] 融资融券分析异常: {e}")
+            margin = MarginMetrics(0, 0, 0, 0, 0, "异常", "低风险")
+
+        try:
+            dragon = CapitalSkill.analyze_dragon(capital_data)
+        except Exception as e:
+            logger.error(f"[CapitalSkill] 龙虎榜分析异常: {e}")
+            dragon = DragonMetrics(0, 0, 0, 0, 0, 0, 0, 0, "异常", "异常", "异常")
+
         flow_structure = CapitalSkill.analyze_flow_structure(north, main, margin, dragon)
 
-        score = 50
-        if north.signal == "积极":
-            score += 10
-        elif north.signal == "谨慎":
-            score -= 10
+        divergence_signals = []
+        try:
+            if north.signal == "积极" and main.signal == "弱势":
+                divergence_signals.append("北向流入但主力流出，外资与内资背离")
+            elif north.signal == "谨慎" and main.signal == "强势":
+                divergence_signals.append("北向流出但主力流入，外资与内资背离")
+            if north.signal == "积极" and margin.leverage_signal in ["融资大幅减仓", "融资减仓"]:
+                divergence_signals.append("北向流入但融资减仓，外资与杠杆资金背离")
+            if main.signal == "强势" and margin.leverage_signal in ["融资大幅减仓", "融资减仓"]:
+                divergence_signals.append("主力流入但融资减仓，机构与杠杆资金背离")
+            if dragon.signal == "机构撤退" and main.signal == "强势":
+                divergence_signals.append("龙虎榜机构撤退但主力流入，席位与资金背离")
+            if north.consistency > 60 and main.signal == "弱势":
+                divergence_signals.append("北向持续流入但主力持续流出，趋势背离")
+        except Exception as e:
+            logger.error(f"[CapitalSkill] 背离信号检测异常: {e}")
 
-        if main.signal == "强势":
-            score += 15
-        elif main.signal == "弱势":
-            score -= 15
-        elif main.signal == "反弹":
-            score += 5
+        try:
+            score = 50
+            if north.signal == "积极":
+                score += int(25 * 0.4)
+            elif north.signal == "谨慎":
+                score -= int(25 * 0.4)
 
-        if margin.leverage_signal in ["融资大幅加仓", "融资加仓"]:
-            score += 5
-        elif margin.leverage_signal in ["融资大幅减仓", "融资减仓"]:
-            score -= 5
+            if main.signal == "强势":
+                score += int(35 * 0.43)
+            elif main.signal == "弱势":
+                score -= int(35 * 0.43)
+            elif main.signal == "反弹":
+                score += int(35 * 0.14)
 
-        if dragon.signal == "机构活跃":
-            score += 10
-        elif dragon.signal == "机构撤退":
-            score -= 10
+            if margin.leverage_signal in ["融资大幅加仓", "融资加仓"]:
+                score += int(20 * 0.25)
+            elif margin.leverage_signal in ["融资大幅减仓", "融资减仓"]:
+                score -= int(20 * 0.25)
 
-        if flow_structure.consensus_level > 0.7:
-            score += 10
-        elif flow_structure.consensus_level < 0.3:
-            score -= 10
+            if dragon.signal == "机构活跃":
+                score += int(20 * 0.5)
+            elif dragon.signal == "机构撤退":
+                score -= int(20 * 0.5)
 
-        score = max(0, min(100, score))
+            if flow_structure.consensus_level > 0.7:
+                score += 10
+            elif flow_structure.consensus_level < 0.3:
+                score -= 10
 
-        if score >= 80:
-            grade = "A级-资金追捧"
-        elif score >= 65:
-            grade = "B级-资金流入"
-        elif score >= 50:
-            grade = "C级-资金平衡"
-        elif score >= 35:
-            grade = "D级-资金流出"
-        else:
-            grade = "E级-资金逃离"
+            if divergence_signals:
+                score -= len(divergence_signals) * 3
 
-        risk = ""
-        if flow_structure.divergence_warning == "资金分歧较大":
-            risk = "资金分歧，注意方向选择"
-        elif north.consistency < 30 and main.signal == "弱势":
-            risk = "内外资同步流出"
-        elif margin.risk_level == "高杠杆风险":
-            risk = "融资杠杆过高，波动风险大"
-        else:
-            risk = "资金面暂无重大风险"
+            score = max(0, min(100, score))
+        except Exception as e:
+            logger.error(f"[CapitalSkill] 评分计算异常: {e}")
+            score = 50
 
-        advice_parts = []
-        if flow_structure.consensus_level > 0.7:
-            advice_parts.append("资金高度共识，趋势明确")
-        if main.institutional_intent == "机构持续建仓":
-            advice_parts.append("主力吸筹明显")
-        if north.cumulative_30d > 0 and north.consistency > 60:
-            advice_parts.append("北向持续流入，外资看好")
-        if dragon.hot_money_trace == "强游资介入":
-            advice_parts.append("游资活跃，短期弹性大")
-        if not advice_parts:
-            advice_parts.append("资金面信号中性")
+        try:
+            if score >= 80:
+                grade = "A级-资金追捧"
+            elif score >= 65:
+                grade = "B级-资金流入"
+            elif score >= 50:
+                grade = "C级-资金平衡"
+            elif score >= 35:
+                grade = "D级-资金流出"
+            else:
+                grade = "E级-资金逃离"
 
-        advice = " | ".join(advice_parts)
-        logger.info(f"[CapitalSkill] 分析完成 | 资金评级: {grade} | 评分: {score}")
+            risk = ""
+            if divergence_signals:
+                risk = "资金背离：" + "；".join(divergence_signals[:2])
+            elif flow_structure.divergence_warning == "资金分歧较大":
+                risk = "资金分歧，注意方向选择"
+            elif north.consistency < 30 and main.signal == "弱势":
+                risk = "内外资同步流出"
+            elif margin.risk_level == "高杠杆风险":
+                risk = "融资杠杆过高，波动风险大"
+            else:
+                risk = "资金面暂无重大风险"
+
+            advice_parts = []
+            if flow_structure.consensus_level > 0.7:
+                advice_parts.append("资金高度共识，趋势明确")
+            if main.institutional_intent == "机构持续建仓":
+                advice_parts.append("主力吸筹明显")
+            if north.cumulative_30d > 0 and north.consistency > 60:
+                advice_parts.append("北向持续流入，外资看好")
+            if dragon.hot_money_trace == "强游资介入":
+                advice_parts.append("游资活跃，短期弹性大")
+            if divergence_signals:
+                advice_parts.append("资金背离需警惕，建议观望确认方向")
+            if not advice_parts:
+                advice_parts.append("资金面信号中性")
+
+            advice = " | ".join(advice_parts)
+        except Exception as e:
+            logger.error(f"[CapitalSkill] 评级/建议生成异常: {e}")
+            grade = "无评级"
+            risk = "研判异常"
+            advice = "数据异常，无法研判"
+        logger.info(f"[CapitalSkill] 分析完成 | 资金评级: {grade} | 评分: {score} | 背离信号: {len(divergence_signals)}个")
 
         return CapitalSignals(
             north=north,
@@ -440,7 +548,8 @@ class CapitalSkill:
             overall_score=score,
             capital_grade=grade,
             risk_signal=risk,
-            research_advice=advice
+            research_advice=advice,
+            divergence_signals=divergence_signals
         )
 
 

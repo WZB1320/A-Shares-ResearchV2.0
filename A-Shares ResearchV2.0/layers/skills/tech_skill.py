@@ -5,13 +5,6 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("TechSkill")
 
 
@@ -30,9 +23,30 @@ class VolumeSignal(Enum):
     HEAVY_DOWN = "放量下跌"
     LIGHT_UP = "缩量上涨"
     LIGHT_DOWN = "缩量下跌"
+    HEAVY_STAGNANT = "放量滞涨"
+    LIGHT_PULLBACK = "缩量回调"
     NORMAL = "量价正常"
     DIVERGENCE_TOP = "顶背离"
     DIVERGENCE_BOTTOM = "底背离"
+
+
+class MarketRegime(Enum):
+    STRONG_TREND = "强趋势"
+    WEAK_TREND = "弱趋势"
+    RANGING = "震荡"
+    UNKNOWN = "未分类"
+
+
+@dataclass
+class DivergenceSignals:
+    macd_bearish: bool
+    macd_bullish: bool
+    rsi_bearish: bool
+    rsi_bullish: bool
+    volume_bearish: bool
+    volume_bullish: bool
+    divergence_count: int
+    divergence_summary: str
 
 
 @dataclass
@@ -118,7 +132,9 @@ class TechSignals:
     bollinger_system: BollingerSystem
     volume_structure: VolumeStructure
     support_resistance: SupportResistance
+    divergence_signals: DivergenceSignals
     trend_strength: TrendStrength
+    market_regime: MarketRegime
     overall_score: int
     short_term_signal: str
     medium_term_signal: str
@@ -174,6 +190,90 @@ class TechSkill:
             return 100.0
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
+
+    @staticmethod
+    def _calc_rsi_series(data: List[float], period: int = 14) -> List[float]:
+        if len(data) < period + 1:
+            return [50.0] * len(data)
+        rsi_series = []
+        for i in range(period, len(data)):
+            rsi_series.append(TechSkill._calc_rsi(data[:i+1], period))
+        return [50.0] * period + rsi_series
+
+    @staticmethod
+    def detect_rsi_divergence(closes: List[float], period: int = 14) -> Tuple[bool, bool]:
+        if len(closes) < 40:
+            return False, False
+        rsi_series = TechSkill._calc_rsi_series(closes, period)
+        if len(rsi_series) < 40:
+            return False, False
+
+        price_segment = closes[-40:]
+        rsi_segment = rsi_series[-40:]
+
+        bearish = False
+        price_highs = []
+        rsi_at_highs = []
+        for i in range(5, len(price_segment) - 5):
+            if price_segment[i] == max(price_segment[i-5:i+6]):
+                price_highs.append(price_segment[i])
+                rsi_at_highs.append(rsi_segment[i])
+        if len(price_highs) >= 2:
+            if price_highs[-1] > price_highs[-2] and rsi_at_highs[-1] < rsi_at_highs[-2]:
+                bearish = True
+
+        bullish = False
+        price_lows = []
+        rsi_at_lows = []
+        for i in range(5, len(price_segment) - 5):
+            if price_segment[i] == min(price_segment[i-5:i+6]):
+                price_lows.append(price_segment[i])
+                rsi_at_lows.append(rsi_segment[i])
+        if len(price_lows) >= 2:
+            if price_lows[-1] < price_lows[-2] and rsi_at_lows[-1] > rsi_at_lows[-2]:
+                bullish = True
+
+        return bearish, bullish
+
+    @staticmethod
+    def analyze_divergence(df_data: List[Dict], macd_system: "MACDSystem",
+                           volume_structure: "VolumeStructure") -> DivergenceSignals:
+        closes = [d.get("close", 0) for d in df_data if d.get("close") is not None]
+        if not closes or len(closes) < 40:
+            return DivergenceSignals(False, False, False, False, False, False, 0, "数据不足")
+
+        macd_bearish = macd_system.divergence == "顶背离"
+        macd_bullish = macd_system.divergence == "底背离"
+
+        rsi_bearish, rsi_bullish = TechSkill.detect_rsi_divergence(closes)
+
+        vol_bearish = volume_structure.signal == VolumeSignal.DIVERGENCE_TOP
+        vol_bullish = volume_structure.signal == VolumeSignal.DIVERGENCE_BOTTOM
+
+        count = sum([macd_bearish, macd_bullish, rsi_bearish, rsi_bullish, vol_bearish, vol_bullish])
+
+        parts = []
+        if macd_bearish:
+            parts.append("MACD顶背离")
+        if macd_bullish:
+            parts.append("MACD底背离")
+        if rsi_bearish:
+            parts.append("RSI顶背离")
+        if rsi_bullish:
+            parts.append("RSI底背离")
+        if vol_bearish:
+            parts.append("量价顶背离")
+        if vol_bullish:
+            parts.append("量价底背离")
+
+        summary = "；".join(parts) if parts else "无背离信号"
+
+        return DivergenceSignals(
+            macd_bearish=macd_bearish, macd_bullish=macd_bullish,
+            rsi_bearish=rsi_bearish, rsi_bullish=rsi_bullish,
+            volume_bearish=vol_bearish, volume_bullish=vol_bullish,
+            divergence_count=count, divergence_summary=summary
+        )
 
     @staticmethod
     def analyze_ma_system(df_data: List[Dict]) -> MASystem:
@@ -282,14 +382,31 @@ class TechSkill:
             momentum = "空头动能减弱"
 
         divergence = "无"
-        if len(closes) >= 20 and len(macd_hist) >= 20:
-            recent_highs = [closes[i] for i in range(-20, 0) if closes[i] == max(closes[-20:])]
-            recent_hist_highs = [macd_hist[i] for i in range(-20, 0)]
-            if len(recent_highs) >= 2 and recent_hist_highs and recent_hist_highs[-1] < max(recent_hist_highs):
-                divergence = "顶背离"
-            recent_lows = [closes[i] for i in range(-20, 0) if closes[i] == min(closes[-20:])]
-            if len(recent_lows) >= 2 and recent_hist_highs and recent_hist_highs[-1] > min(recent_hist_highs):
-                divergence = "底背离"
+        if len(closes) >= 40 and len(dif) >= 40:
+            price_segment = closes[-40:]
+            dif_segment = dif[-40:]
+
+            price_highs = []
+            dif_at_highs = []
+            for i in range(5, len(price_segment) - 5):
+                if price_segment[i] == max(price_segment[i-5:i+6]):
+                    price_highs.append(price_segment[i])
+                    dif_at_highs.append(dif_segment[i])
+
+            if len(price_highs) >= 2:
+                if price_highs[-1] > price_highs[-2] and dif_at_highs[-1] < dif_at_highs[-2]:
+                    divergence = "顶背离"
+
+            price_lows = []
+            dif_at_lows = []
+            for i in range(5, len(price_segment) - 5):
+                if price_segment[i] == min(price_segment[i-5:i+6]):
+                    price_lows.append(price_segment[i])
+                    dif_at_lows.append(dif_segment[i])
+
+            if len(price_lows) >= 2:
+                if price_lows[-1] < price_lows[-2] and dif_at_lows[-1] > dif_at_lows[-2]:
+                    divergence = "底背离"
 
         return MACDSystem(
             dif=round(current_dif, 3), dea=round(current_dea, 3),
@@ -416,14 +533,19 @@ class TechSkill:
         down_ratio = down_avg / up_avg if up_avg > 0 else 1.0
 
         if len(closes) >= 2:
+            price_change_pct = abs(closes[-1] - closes[-2]) / closes[-2] * 100 if closes[-2] != 0 else 0
             if volume_ratio > 2 and closes[-1] > closes[-2]:
                 signal = VolumeSignal.HEAVY_UP
             elif volume_ratio > 2 and closes[-1] < closes[-2]:
                 signal = VolumeSignal.HEAVY_DOWN
+            elif volume_ratio > 1.5 and price_change_pct < 1.0:
+                signal = VolumeSignal.HEAVY_STAGNANT
             elif volume_ratio < 0.5 and closes[-1] > closes[-2]:
                 signal = VolumeSignal.LIGHT_UP
             elif volume_ratio < 0.5 and closes[-1] < closes[-2]:
                 signal = VolumeSignal.LIGHT_DOWN
+            elif volume_ratio < 0.7 and closes[-1] < closes[-2] and price_change_pct < 2.0:
+                signal = VolumeSignal.LIGHT_PULLBACK
             else:
                 signal = VolumeSignal.NORMAL
         else:
@@ -608,19 +730,108 @@ class TechSkill:
         return max(0, min(100, score))
 
     @staticmethod
+    def classify_market_regime(ma_system: MASystem, bollinger_system: BollingerSystem,
+                                trend_strength: TrendStrength) -> MarketRegime:
+        if trend_strength in [TrendStrength.STRONG_BULL, TrendStrength.STRONG_BEAR]:
+            return MarketRegime.STRONG_TREND
+        if trend_strength in [TrendStrength.BULL, TrendStrength.BEAR]:
+            return MarketRegime.WEAK_TREND
+        if bollinger_system.squeeze:
+            return MarketRegime.RANGING
+        if ma_system.arrangement == "缠绕震荡":
+            return MarketRegime.RANGING
+        if bollinger_system.bandwidth < 8:
+            return MarketRegime.RANGING
+        return MarketRegime.UNKNOWN
+
+    @staticmethod
+    def _empty_signals() -> "TechSignals":
+        return TechSignals(
+            ma_system=MASystem(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, [], [], "数据不足"),
+            macd_system=MACDSystem(0, 0, 0, "数据不足", False, False, "无", "中性"),
+            kdj_system=KDJSystem(50, 50, 50, False, False, False, False),
+            bollinger_system=BollingerSystem(0, 0, 0, 0, "数据不足", False, "无"),
+            volume_structure=VolumeStructure(1.0, 0, 50, 1.0, 1.0, "中性", "平稳", VolumeSignal.NORMAL),
+            support_resistance=SupportResistance(0, 0, 0, 0, 0, 0, "数据不足", 0),
+            divergence_signals=DivergenceSignals(False, False, False, False, False, False, 0, "数据不足"),
+            trend_strength=TrendStrength.NEUTRAL,
+            market_regime=MarketRegime.UNKNOWN,
+            overall_score=50,
+            short_term_signal="数据不足",
+            medium_term_signal="数据不足",
+            risk_warning="数据异常",
+            research_advice="数据不足，无法研判"
+        )
+
+    @staticmethod
     def analyze(df_data: List[Dict]) -> TechSignals:
         logger.info("[TechSkill] 开始机构级技术分析")
 
-        ma_system = TechSkill.analyze_ma_system(df_data)
-        macd_system = TechSkill.analyze_macd(df_data)
-        kdj_system = TechSkill.analyze_kdj(df_data)
-        bollinger_system = TechSkill.analyze_bollinger(df_data)
-        volume_structure = TechSkill.analyze_volume_structure(df_data)
-        support_resistance = TechSkill.analyze_support_resistance(df_data)
-        trend_strength = TechSkill.calculate_trend_strength(ma_system, macd_system, kdj_system)
-        overall_score = TechSkill.calculate_overall_score(
-            ma_system, macd_system, kdj_system, bollinger_system, volume_structure, trend_strength
-        )
+        if not df_data or not isinstance(df_data, list) or len(df_data) == 0:
+            logger.warning("[TechSkill] df_data为空或类型异常，返回默认空信号")
+            return TechSkill._empty_signals()
+
+        try:
+            ma_system = TechSkill.analyze_ma_system(df_data)
+        except Exception as e:
+            logger.error(f"[TechSkill] 均线系统分析异常: {e}")
+            ma_system = MASystem(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, [], [], "异常")
+
+        try:
+            macd_system = TechSkill.analyze_macd(df_data)
+        except Exception as e:
+            logger.error(f"[TechSkill] MACD分析异常: {e}")
+            macd_system = MACDSystem(0, 0, 0, "异常", False, False, "无", "中性")
+
+        try:
+            kdj_system = TechSkill.analyze_kdj(df_data)
+        except Exception as e:
+            logger.error(f"[TechSkill] KDJ分析异常: {e}")
+            kdj_system = KDJSystem(50, 50, 50, False, False, False, False)
+
+        try:
+            bollinger_system = TechSkill.analyze_bollinger(df_data)
+        except Exception as e:
+            logger.error(f"[TechSkill] 布林带分析异常: {e}")
+            bollinger_system = BollingerSystem(0, 0, 0, 0, "异常", False, "无")
+
+        try:
+            volume_structure = TechSkill.analyze_volume_structure(df_data)
+        except Exception as e:
+            logger.error(f"[TechSkill] 量价结构分析异常: {e}")
+            volume_structure = VolumeStructure(1.0, 0, 50, 1.0, 1.0, "中性", "平稳", VolumeSignal.NORMAL)
+
+        try:
+            support_resistance = TechSkill.analyze_support_resistance(df_data)
+        except Exception as e:
+            logger.error(f"[TechSkill] 支撑阻力分析异常: {e}")
+            support_resistance = SupportResistance(0, 0, 0, 0, 0, 0, "异常", 0)
+
+        try:
+            trend_strength = TechSkill.calculate_trend_strength(ma_system, macd_system, kdj_system)
+        except Exception as e:
+            logger.error(f"[TechSkill] 趋势强度计算异常: {e}")
+            trend_strength = TrendStrength.NEUTRAL
+
+        try:
+            divergence_signals = TechSkill.analyze_divergence(df_data, macd_system, volume_structure)
+        except Exception as e:
+            logger.error(f"[TechSkill] 背离分析异常: {e}")
+            divergence_signals = DivergenceSignals(False, False, False, False, False, False, 0, "异常")
+
+        try:
+            market_regime = TechSkill.classify_market_regime(ma_system, bollinger_system, trend_strength)
+        except Exception as e:
+            logger.error(f"[TechSkill] 行情状态判定异常: {e}")
+            market_regime = MarketRegime.UNKNOWN
+
+        try:
+            overall_score = TechSkill.calculate_overall_score(
+                ma_system, macd_system, kdj_system, bollinger_system, volume_structure, trend_strength
+            )
+        except Exception as e:
+            logger.error(f"[TechSkill] 综合评分计算异常: {e}")
+            overall_score = 50
 
         short_signal = ""
         if trend_strength in [TrendStrength.STRONG_BULL, TrendStrength.BULL]:
@@ -635,33 +846,50 @@ class TechSkill:
             medium_signal = "中期趋势向上"
         elif ma_system.arrangement == "空头排列":
             medium_signal = "中期趋势向下"
+        elif market_regime == MarketRegime.STRONG_TREND:
+            medium_signal = "中期趋势运行中"
         else:
             medium_signal = "中期趋势不明"
 
-        risk = ""
-        if macd_system.divergence == "顶背离":
-            risk = "MACD顶背离，注意回调风险"
-        elif kdj_system.overbought:
-            risk = "KDJ超买，短期或有调整"
-        elif kdj_system.oversold:
-            risk = "KDJ超卖，短期或有反弹"
-        else:
-            risk = "技术面暂无明确风险信号"
+        risk_parts = []
+        if divergence_signals.macd_bearish:
+            risk_parts.append("MACD顶背离，注意回调风险")
+        if divergence_signals.rsi_bearish:
+            risk_parts.append("RSI顶背离，动能衰竭")
+        if divergence_signals.volume_bearish:
+            risk_parts.append("量价顶背离，高位换手异常")
+        if kdj_system.overbought:
+            risk_parts.append("KDJ超买，短期或有调整")
+        if kdj_system.oversold:
+            risk_parts.append("KDJ超卖，短期或有反弹")
+        if volume_structure.signal == VolumeSignal.HEAVY_STAGNANT:
+            risk_parts.append("放量滞涨，主力出货嫌疑")
+        if not risk_parts:
+            risk_parts.append("技术面暂无明确风险信号")
+        risk = "；".join(risk_parts)
 
         advice_parts = []
         if trend_strength in [TrendStrength.STRONG_BULL, TrendStrength.BULL]:
             advice_parts.append("趋势向好，可逢低布局")
+        if divergence_signals.macd_bullish:
+            advice_parts.append("MACD底背离，关注反转机会")
+        if divergence_signals.rsi_bullish:
+            advice_parts.append("RSI底背离，动能积蓄")
         if macd_system.golden_cross:
             advice_parts.append("MACD金叉，动能转强")
         if kdj_system.oversold:
             advice_parts.append("KDJ超卖区域，关注反弹机会")
         if volume_structure.signal == VolumeSignal.HEAVY_UP:
             advice_parts.append("放量上涨，资金介入明显")
+        if volume_structure.signal == VolumeSignal.LIGHT_PULLBACK:
+            advice_parts.append("缩量回调，洗盘特征")
+        if market_regime == MarketRegime.RANGING:
+            advice_parts.append("震荡行情，高抛低吸")
         if not advice_parts:
             advice_parts.append("技术面信号中性，建议观望")
 
         advice = " | ".join(advice_parts)
-        logger.info(f"[TechSkill] 分析完成 | 趋势强度: {trend_strength.value} | 评分: {overall_score}")
+        logger.info(f"[TechSkill] 分析完成 | 趋势: {trend_strength.value} | 行情: {market_regime.value} | 评分: {overall_score} | 背离: {divergence_signals.divergence_count}个")
 
         return TechSignals(
             ma_system=ma_system,
@@ -670,7 +898,9 @@ class TechSkill:
             bollinger_system=bollinger_system,
             volume_structure=volume_structure,
             support_resistance=support_resistance,
+            divergence_signals=divergence_signals,
             trend_strength=trend_strength,
+            market_regime=market_regime,
             overall_score=overall_score,
             short_term_signal=short_signal,
             medium_term_signal=medium_signal,

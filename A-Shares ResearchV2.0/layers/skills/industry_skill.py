@@ -5,13 +5,6 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("IndustrySkill")
 
 

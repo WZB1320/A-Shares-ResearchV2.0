@@ -63,11 +63,4 @@ env_config = EnvConfig()
 
 # 校验模型配置的辅助函数
 def check_model_config(model_name: str) -> bool:
-    if model_name == "qwen":
-        return bool(env_config.QWEN_API_KEY)
-    elif model_name == "deepseek":
-        return bool(env_config.DEEPSEEK_API_KEY)
-    elif model_name == "ernie":
-        return bool(env_config.ERNIE_API_KEY)
-    else:
-        return False
+    return env_config.check_model_config(model_name)

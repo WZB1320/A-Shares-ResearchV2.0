@@ -7,13 +7,6 @@ from functools import wraps
 from abc import ABC, abstractmethod
 from enum import Enum
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("DataConnector")
 
 import pandas as pd

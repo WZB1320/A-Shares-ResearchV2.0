@@ -5,13 +5,6 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("FundSkill")
 
 
@@ -42,6 +35,7 @@ class ProfitabilityMetrics:
     ebitda_margin: float
     dupont: DupontAnalysis
     profit_quality: ProfitQuality
+    earnings_quality_score: float
     score: int
 
 
@@ -74,6 +68,9 @@ class GrowthMetrics:
     revenue_cagr_3y: float
     profit_cagr_3y: float
     roe_cagr_3y: float
+    revenue_growth_yoy: float
+    profit_growth_yoy: float
+    deducted_profit_growth: float
     revenue_acceleration: bool
     profit_sustainability: str
     growth_stage: str
@@ -215,6 +212,25 @@ class FundSkill:
 
         score = max(0, min(100, score))
 
+        ocf = FundSkill._safe_float(financial_data.get("operating_cash_flow", financial_data.get("经营活动现金流", 0)))
+        net_profit_for_quality = FundSkill._safe_float(financial_data.get("net_profit", financial_data.get("净利润", 0)))
+        if net_profit_for_quality > 0:
+            ocf_ratio = ocf / net_profit_for_quality
+            if ocf_ratio > 1.2:
+                earnings_quality = 100.0
+            elif ocf_ratio > 1.0:
+                earnings_quality = 90.0
+            elif ocf_ratio > 0.8:
+                earnings_quality = 75.0
+            elif ocf_ratio > 0.5:
+                earnings_quality = 60.0
+            elif ocf_ratio > 0:
+                earnings_quality = 40.0
+            else:
+                earnings_quality = 20.0
+        else:
+            earnings_quality = 0.0
+
         if score >= 80:
             quality = ProfitQuality.EXCELLENT
         elif score >= 65:
@@ -235,6 +251,7 @@ class FundSkill:
             ebitda_margin=round(ebitda, 2),
             dupont=dupont,
             profit_quality=quality,
+            earnings_quality_score=round(earnings_quality, 2),
             score=score
         )
 
@@ -372,15 +389,25 @@ class FundSkill:
         revenue_history = financial_data.get("revenue_history", financial_data.get("收入历史", []))
         profit_history = financial_data.get("profit_history", financial_data.get("利润历史", []))
         roe_history = financial_data.get("roe_history", financial_data.get("ROE历史", []))
+        deducted_profit_history = financial_data.get("deducted_profit_history", financial_data.get("扣非利润历史", []))
 
         def calc_cagr(data: List[float], years: int = 3) -> float:
             if len(data) < years or data[0] <= 0 or data[-1] <= 0:
                 return 0
             return ((data[-1] / data[0]) ** (1 / years) - 1) * 100
 
+        def calc_yoy(data: List[float]) -> float:
+            if len(data) < 2 or data[-2] <= 0:
+                return 0
+            return ((data[-1] - data[-2]) / data[-2]) * 100
+
         revenue_cagr = calc_cagr(revenue_history)
         profit_cagr = calc_cagr(profit_history)
         roe_cagr = calc_cagr(roe_history)
+
+        revenue_yoy = calc_yoy(revenue_history)
+        profit_yoy = calc_yoy(profit_history)
+        deducted_profit_yoy = calc_yoy(deducted_profit_history) if deducted_profit_history else 0
 
         acceleration = False
         if len(revenue_history) >= 3:
@@ -425,12 +452,18 @@ class FundSkill:
         elif profit_cagr < 0:
             score -= 10
 
+        if deducted_profit_yoy > 0 and deducted_profit_yoy < profit_yoy * 0.8:
+            score -= 5
+
         score = max(0, min(100, score))
 
         return GrowthMetrics(
             revenue_cagr_3y=round(revenue_cagr, 2),
             profit_cagr_3y=round(profit_cagr, 2),
             roe_cagr_3y=round(roe_cagr, 2),
+            revenue_growth_yoy=round(revenue_yoy, 2),
+            profit_growth_yoy=round(profit_yoy, 2),
+            deducted_profit_growth=round(deducted_profit_yoy, 2),
             revenue_acceleration=acceleration,
             profit_sustainability=sustainability,
             growth_stage=stage,

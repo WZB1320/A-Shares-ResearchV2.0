@@ -6,13 +6,6 @@ from typing import Dict, TypedDict, Optional, List, Any
 from datetime import datetime
 from enum import Enum
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("Harness-State")
 
 

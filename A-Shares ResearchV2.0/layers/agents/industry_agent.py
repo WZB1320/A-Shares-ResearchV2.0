@@ -3,18 +3,11 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("IndustryAgent")
 
 from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
-from layers.skills import IndustrySkill, industry_skill
+from layers.skills.industry_skill import IndustrySkill, industry_skill
 
 REPORT_MAX_TOKENS = 1800
 LLM_TEMPERATURE = 0.3
@@ -22,7 +15,7 @@ LLM_TEMPERATURE = 0.3
 
 class IndustryAgent:
     """
-    行业Agent - 纯执行层（机构级）
+    行业面Agent - 纯执行层（机构级标准化）
     职责：调用 IndustrySkill 进行机构级行业分析 + LLM 生成机构级研报
     """
 
@@ -32,77 +25,67 @@ class IndustryAgent:
         self.data_connector = data_connector
         self.industry_skill = industry_skill
 
-    def analyze(self, stock_code: str, fundamental_data: Optional[Dict] = None) -> str:
+    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> str:
         logger.info(f"[IndustryAgent] 开始机构级行业分析: {stock_code}")
 
-        if fundamental_data is None:
-            if self.data_connector is None:
-                self.data_connector = DataConnector(stock_code)
+        fundamental_data = None
+        if state is not None:
+            fundamental_data = state.get("fundamental_data") or state.get("financial_data")
+
+        if fundamental_data is None and self.data_connector is not None:
             fundamental_data = self.data_connector.fetch_fundamental_data()
 
-        signals = self.industry_skill.analyze(fundamental_data)
+        if fundamental_data is None:
+            logger.warning(f"[IndustryAgent] 无行业数据: {stock_code}")
+            return f"⚠️ {stock_code} 行业数据不可用，无法生成分析报告"
 
-        prompt = f"""
-# A股行业量化分析指令（券商研究所标准）
-你是任职于头部券商研究所的行业首席分析师，拥有15年以上A股行业研究经验，精通波特五力模型、产业链分析、竞争格局评估等行业研究框架。
+        try:
+            signals = self.industry_skill.analyze(fundamental_data)
+        except Exception as e:
+            error_msg = f"行业指标计算失败：{str(e)}"
+            logger.error(f"[IndustryAgent] {error_msg}")
+            return f"⚠️ {stock_code} {error_msg}"
 
-## 一、行业周期判断
-- 行业名称：{signals.industry_name}
-- 行业周期：{signals.industry_cycle.value}
+        prompt = f"""你是一位资深券商行业分析师，请基于以下机构级行业分析数据，撰写一份专业的行业研判报告。
 
-## 二、产业链分析
-- 上游压力：{signals.chain_metrics.upstream_pressure}
-- 下游需求：{signals.chain_metrics.downstream_demand}
-- 供给约束：{signals.chain_metrics.supply_constraint}
-- 价格趋势：{signals.chain_metrics.price_trend}
-- 库存水平：{signals.chain_metrics.inventory_level}
+股票代码：{stock_code}
 
-## 三、竞争格局分析
-- 市场份额={signals.competitive.market_share}%，份额变化={signals.competitive.market_share_change}%
-- CR3={signals.competitive.cr3}%，CR5={signals.competitive.cr5}%
-- 赫芬达尔指数={signals.competitive.herfindahl_index}
-- 竞争格局：{signals.competitive.competitive_pattern}
-- 护城河强度：{signals.competitive.moat_strength}
+【行业定位】
+所属行业：{signals.industry_name if hasattr(signals, 'industry_name') else 'N/A'}
+行业地位：{signals.industry_position if hasattr(signals, 'industry_position') else 'N/A'}
 
-## 四、政策环境评估
-- 政策方向：{signals.policy.policy_direction}
-- 补贴力度：{signals.policy.subsidy_level}
-- 监管风险：{signals.policy.regulatory_risk}
-- 贸易政策影响：{signals.policy.trade_policy_impact}
-- 政策综合评分：{signals.policy.overall_policy_score}/100
+【行业景气度】
+景气评分：{signals.prosperity_score if hasattr(signals, 'prosperity_score') else 'N/A'}
+景气趋势：{signals.prosperity_trend if hasattr(signals, 'prosperity_trend') else 'N/A'}
 
-## 五、行业估值
-- 行业PE={signals.valuation.industry_pe}，行业PB={signals.valuation.industry_pb}，行业PS={signals.valuation.industry_ps}
-- PE历史分位={signals.valuation.pe_history_percentile}%，PB历史分位={signals.valuation.pb_history_percentile}%
-- 估值状态：{signals.valuation.valuation_status}
+【竞争格局】
+市场集中度：{signals.concentration if hasattr(signals, 'concentration') else 'N/A'}
+竞争壁垒：{signals.competitive_moat if hasattr(signals, 'competitive_moat') else 'N/A'}
 
-## 六、同业对比
-- 相对行业PE={signals.peer_comparison.vs_industry_pe_pct}%
-- 相对行业PB={signals.peer_comparison.vs_industry_pb_pct}%
-- 相对行业ROE={signals.peer_comparison.vs_industry_roe_pct}%
-- 相对行业增速={signals.peer_comparison.vs_industry_growth_pct}%
-- 相对竞争力：{signals.peer_comparison.relative_strength}
+【行业估值】
+行业PE：{signals.industry_pe if hasattr(signals, 'industry_pe') else 'N/A'}
+行业PB：{signals.industry_pb if hasattr(signals, 'industry_pb') else 'N/A'}
 
-## 七、综合评估
-- 综合评分：{signals.overall_score}/100
-- 赛道评级：{signals.industry_grade}
-- 风险提示：{"；".join(signals.risk_warnings) if signals.risk_warnings else "无"}
-- 投资建议：{signals.research_advice}
+【行业综合评分】
+评分：{signals.overall_score:.1f}/100
+评级：{signals.industry_level}
 
-## 输出要求（机构研报标准）
-1. 行业景气度分析：周期位置、景气驱动因素、前瞻指标
-2. 产业链深度分析：上下游议价能力、供需格局、库存周期
-3. 竞争格局评估：市场集中度、护城河、竞争态势演变
-4. 政策影响量化：政策红利/风险、监管趋势、补贴可持续性
-5. 行业估值对比：历史分位、同业对比、估值合理性
-6. 行业机会与风险：赛道评级逻辑、核心假设、风险点
-- 结合申万行业分类标准，核心数据用【】标注
-- 总字数1200-1800字，纯文本输出
-"""
+请按以下结构输出报告（800-1000字）：
+1. 行业景气度研判（周期位置+景气趋势）
+2. 竞争格局分析（集中度+壁垒+公司地位）
+3. 行业估值对比（PE/PB相对行业水平）
+4. 政策与催化剂（政策环境+行业事件）
+5. 综合评分与配置建议
+
+要求：专业、客观、数据驱动，使用机构级术语。"""
+
         try:
             completion = self.client.chat.completions.create(
                 model=get_model_id(self.model_name),
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": "你是一位资深券商行业分析师，擅长行业研究和竞争格局分析。请用专业、客观的语言撰写报告。"},
+                    {"role": "user", "content": prompt}
+                ],
                 temperature=LLM_TEMPERATURE,
                 max_tokens=REPORT_MAX_TOKENS
             )
@@ -117,9 +100,8 @@ class IndustryAgent:
 
 def industry_agent_node(state: dict) -> dict:
     stock_code = state["stock_code"]
-    fundamental_data = state.get("fundamental_data", None)
     agent = IndustryAgent(model_name=DEFAULT_MODEL)
-    industry_report = agent.analyze(stock_code, fundamental_data)
+    industry_report = agent.analyze(stock_code, state)
     state["industry_report"] = industry_report
     return state
 

@@ -5,9 +5,6 @@ from typing import Dict, Optional, List
 from dataclasses import dataclass
 from enum import Enum
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(level=logging.INFO, format="[%(name)s] %(asctime)s - %(message)s")
 logger = logging.getLogger("ValuationSkill")
 
 
@@ -17,6 +14,13 @@ class ValuationLevel(Enum):
     FAIRLY_VALUED = "合理"
     OVERVALUED = "高估"
     SEVERELY_OVERVALUED = "严重高估"
+
+
+class StockStyle(Enum):
+    GROWTH = "成长股"
+    VALUE = "价值股"
+    CYCLICAL = "周期股"
+    UNKNOWN = "未分类"
 
 
 @dataclass
@@ -32,8 +36,10 @@ class AbsoluteValuation:
 
 @dataclass
 class HistoricalPercentile:
+    pe_3y_percentile: float
     pe_5y_percentile: float
     pe_10y_percentile: float
+    pb_3y_percentile: float
     pb_5y_percentile: float
     pb_10y_percentile: float
     ps_5y_percentile: float
@@ -47,6 +53,8 @@ class RelativeValuation:
     vs_industry_ps_pct: float
     vs_historical_pe_pct: float
     vs_historical_pb_pct: float
+    pe_premium_pct: float
+    pb_premium_pct: float
     relative_status: str
 
 
@@ -66,6 +74,7 @@ class ValuationSignals:
     historical: HistoricalPercentile
     relative: RelativeValuation
     dcf: DCFMetrics
+    stock_style: StockStyle
     overall_score: int
     valuation_level: ValuationLevel
     risk_warning: str
@@ -127,8 +136,10 @@ class ValuationSkill:
             count = sum(1 for h in sorted_hist if h < current)
             return (count / len(sorted_hist)) * 100
 
+        pe_3y = calc_percentile(current_pe, pe_history[-750:]) if len(pe_history) >= 750 else calc_percentile(current_pe, pe_history)
         pe_5y = calc_percentile(current_pe, pe_history[-1250:]) if len(pe_history) >= 1250 else calc_percentile(current_pe, pe_history)
         pe_10y = calc_percentile(current_pe, pe_history)
+        pb_3y = calc_percentile(current_pb, pb_history[-750:]) if len(pb_history) >= 750 else calc_percentile(current_pb, pb_history)
         pb_5y = calc_percentile(current_pb, pb_history[-1250:]) if len(pb_history) >= 1250 else calc_percentile(current_pb, pb_history)
         pb_10y = calc_percentile(current_pb, pb_history)
         ps_5y = calc_percentile(current_ps, ps_history[-1250:]) if len(ps_history) >= 1250 else calc_percentile(current_ps, ps_history)
@@ -146,8 +157,10 @@ class ValuationSkill:
             status = "历史估值高位"
 
         return HistoricalPercentile(
+            pe_3y_percentile=round(pe_3y, 2),
             pe_5y_percentile=round(pe_5y, 2),
             pe_10y_percentile=round(pe_10y, 2),
+            pb_3y_percentile=round(pb_3y, 2),
             pb_5y_percentile=round(pb_5y, 2),
             pb_10y_percentile=round(pb_10y, 2),
             ps_5y_percentile=round(ps_5y, 2),
@@ -174,6 +187,9 @@ class ValuationSkill:
         vs_hist_pe = (stock_pe / avg_pe_hist * 100) if avg_pe_hist > 0 else 100
         vs_hist_pb = (stock_pb / avg_pb_hist * 100) if avg_pb_hist > 0 else 100
 
+        pe_premium = vs_ind_pe - 100
+        pb_premium = vs_ind_pb - 100
+
         if vs_ind_pe < 80 and vs_hist_pe < 80:
             status = "相对低估"
         elif vs_ind_pe > 120 and vs_hist_pe > 120:
@@ -187,6 +203,8 @@ class ValuationSkill:
             vs_industry_ps_pct=round(vs_ind_ps, 2),
             vs_historical_pe_pct=round(vs_hist_pe, 2),
             vs_historical_pb_pct=round(vs_hist_pb, 2),
+            pe_premium_pct=round(pe_premium, 2),
+            pb_premium_pct=round(pb_premium, 2),
             relative_status=status
         )
 
@@ -233,8 +251,37 @@ class ValuationSkill:
         )
 
     @staticmethod
+    def classify_stock_style(valuation_data: Dict, fundamental_data: Dict) -> StockStyle:
+        pe_ttm = ValuationSkill._safe_float(valuation_data.get("pe_ttm"))
+        pb = ValuationSkill._safe_float(valuation_data.get("pb"))
+        growth = ValuationSkill._safe_float(valuation_data.get("profit_growth", 10))
+        roe = ValuationSkill._safe_float(fundamental_data.get("roe", fundamental_data.get("净资产收益率", 0)))
+        dividend = ValuationSkill._safe_float(valuation_data.get("dividend", 0))
+        price = ValuationSkill._safe_float(valuation_data.get("current_price", 1))
+        dividend_yield = (dividend / price) * 100 if price > 0 else 0
+        beta = ValuationSkill._safe_float(fundamental_data.get("beta", 1.0))
+        industry_cyclical = fundamental_data.get("is_cyclical", False)
+
+        if industry_cyclical or (beta > 1.3 and pb < 1.5):
+            return StockStyle.CYCLICAL
+
+        if growth > 20 and pe_ttm > 20 and roe > 15:
+            return StockStyle.GROWTH
+
+        if dividend_yield > 2.5 and pb < 3 and roe > 8:
+            return StockStyle.VALUE
+
+        if growth > 15:
+            return StockStyle.GROWTH
+        elif dividend_yield > 2:
+            return StockStyle.VALUE
+        else:
+            return StockStyle.UNKNOWN
+
+    @staticmethod
     def calculate_score(absolute: AbsoluteValuation, historical: HistoricalPercentile,
-                        relative: RelativeValuation, dcf: DCFMetrics) -> tuple:
+                        relative: RelativeValuation, dcf: DCFMetrics,
+                        stock_style: StockStyle = StockStyle.UNKNOWN) -> tuple:
         score = 50
 
         if absolute.pe_ttm > 0 and absolute.pe_ttm < 15:
@@ -253,10 +300,21 @@ class ValuationSkill:
         elif absolute.pb > 10:
             score -= 15
 
-        if absolute.peg > 0 and absolute.peg < 1:
-            score += 10
-        elif absolute.peg > 2:
-            score -= 10
+        if stock_style == StockStyle.GROWTH:
+            if absolute.peg > 0 and absolute.peg < 1.5:
+                score += 10
+            elif absolute.peg > 3:
+                score -= 15
+        elif stock_style == StockStyle.VALUE:
+            if absolute.peg > 0 and absolute.peg < 1.0:
+                score += 10
+            elif absolute.peg > 2:
+                score -= 15
+        else:
+            if absolute.peg > 0 and absolute.peg < 1:
+                score += 10
+            elif absolute.peg > 2:
+                score -= 10
 
         if historical.pe_10y_percentile < 20:
             score += 15
@@ -299,19 +357,33 @@ class ValuationSkill:
         historical = ValuationSkill.analyze_historical(valuation_data)
         relative = ValuationSkill.analyze_relative(valuation_data, fundamental_data)
         dcf = ValuationSkill.analyze_dcf(valuation_data, fundamental_data)
+        stock_style = ValuationSkill.classify_stock_style(valuation_data, fundamental_data)
 
-        score, level = ValuationSkill.calculate_score(absolute, historical, relative, dcf)
+        score, level = ValuationSkill.calculate_score(absolute, historical, relative, dcf, stock_style)
 
+        risk_parts = []
         if absolute.pe_ttm <= 0:
-            risk = "亏损状态，PE失效，需关注PB/PS"
-        elif historical.pe_10y_percentile > 90:
-            risk = "估值处于历史高位，注意回调风险"
-        elif relative.vs_industry_pe_pct > 150:
-            risk = "相对行业显著高估"
-        elif dcf.upside_downside < -50:
-            risk = "DCF显示大幅高估"
-        else:
-            risk = "估值风险可控"
+            risk_parts.append("亏损状态，PE失效，需关注PB/PS")
+        if historical.pe_10y_percentile > 90:
+            risk_parts.append("PE处于10年历史90%分位以上，高估值泡沫风险")
+        if historical.pe_10y_percentile > 80 and historical.pe_3y_percentile > 80:
+            risk_parts.append("PE在3年和10年均处于高位，估值泡沫信号强烈")
+        if relative.pe_premium_pct > 50:
+            risk_parts.append(f"PE相对行业溢价{relative.pe_premium_pct:.0f}%，显著高估")
+        if dcf.upside_downside < -50:
+            risk_parts.append("DCF显示大幅高估")
+        if historical.pe_10y_percentile < 10 and absolute.pe_ttm > 0:
+            risk_parts.append("PE处于10年历史10%分位以下，需警惕低估值陷阱（基本面恶化）")
+        if absolute.pb < 1 and absolute.pe_ttm > 50:
+            risk_parts.append("PB破净但PE高企，可能存在资产质量风险")
+        if stock_style == StockStyle.GROWTH and absolute.peg > 3:
+            risk_parts.append("成长股PEG>3，估值严重透支未来增长")
+        if stock_style == StockStyle.VALUE and absolute.peg > 2:
+            risk_parts.append("价值股PEG>2，估值偏高")
+        if not risk_parts:
+            risk_parts.append("估值风险可控")
+
+        risk = "；".join(risk_parts)
 
         advice_parts = []
         if level in [ValuationLevel.UNDERVALUED, ValuationLevel.SEVERELY_UNDERVALUED]:
@@ -324,17 +396,22 @@ class ValuationSkill:
             advice_parts.append(f"DCF隐含{dcf.upside_downside:.1f}%上行空间")
         if absolute.dividend_yield > 3:
             advice_parts.append(f"股息率{absolute.dividend_yield:.1f}%，具备防御价值")
+        if stock_style == StockStyle.GROWTH and absolute.peg < 1.5:
+            advice_parts.append("成长股PEG合理，成长性未被充分定价")
+        if stock_style == StockStyle.VALUE and absolute.peg < 1.0:
+            advice_parts.append("价值股PEG合理，估值具备吸引力")
         if not advice_parts:
             advice_parts.append("估值处于合理区间")
 
         advice = " | ".join(advice_parts)
-        logger.info(f"[ValuationSkill] 分析完成 | 估值水平: {level.value} | 评分: {score}")
+        logger.info(f"[ValuationSkill] 分析完成 | 股票风格: {stock_style.value} | 估值水平: {level.value} | 评分: {score}")
 
         return ValuationSignals(
             absolute=absolute,
             historical=historical,
             relative=relative,
             dcf=dcf,
+            stock_style=stock_style,
             overall_score=score,
             valuation_level=level,
             risk_warning=risk,

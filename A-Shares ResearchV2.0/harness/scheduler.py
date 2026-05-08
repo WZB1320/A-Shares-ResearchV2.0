@@ -5,16 +5,9 @@ from typing import Dict, Any, Optional, List, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-sys.path.append(str(Path(__file__).parent.parent))
-
 from harness.state import HarnessStateManager, TaskStatus
 from harness.validator import harness_validator, ValidationResult
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("Harness-Scheduler")
 
 

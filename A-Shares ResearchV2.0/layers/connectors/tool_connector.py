@@ -4,13 +4,6 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
 from functools import wraps
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(name)s] %(asctime)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("ToolConnector")
 
 
