@@ -6,6 +6,14 @@ from layers.agents.industry_agent import IndustryAgent, industry_agent, industry
 from layers.agents.risk_agent import RiskAgent, risk_agent, risk_agent_node
 from layers.agents.valuation_agent import ValuationAgent, valuation_agent, valuation_agent_node
 from layers.agents.chief_agent import ChiefAgent, chief_agent, chief_agent_node
+from layers.agents.report_schema import (
+    AgentReport,
+    parse_json_report,
+    aggregate_reports,
+    reports_to_markdown,
+    error_report,
+    unavailable_report,
+)
 
 __all__ = [
     "DataAgent",
@@ -31,5 +39,11 @@ __all__ = [
     "valuation_agent_node",
     "ChiefAgent",
     "chief_agent",
-    "chief_agent_node"
+    "chief_agent_node",
+    "AgentReport",
+    "parse_json_report",
+    "aggregate_reports",
+    "reports_to_markdown",
+    "error_report",
+    "unavailable_report",
 ]

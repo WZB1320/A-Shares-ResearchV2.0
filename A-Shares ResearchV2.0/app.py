@@ -54,3 +54,7 @@ def generate(request: Request, stock_code: str = Form(...), agents: List[str] = 
         "report": report,
         "selected_agents": selected_agents
     })
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8080, reload=True)

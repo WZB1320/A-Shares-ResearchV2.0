@@ -131,14 +131,19 @@ A-Shares-ResearchV3.0-Harness/
 
 ### 方式一：Web网页端（推荐）
 
-1. 进入项目根目录
-2. 启动服务：
+1. 确保本地数据API服务正在运行（端口 8000）
+2. 进入项目根目录
+3. 启动投研服务：
    ```bash
-   uvicorn app:app --reload
+   uvicorn app:app --reload --port 8080
    ```
-   看到 `Uvicorn running on http://127.0.0.1:8000` 即成功
-3. 浏览器访问 `http://127.0.0.1:8000`
-4. 输入股票代码（如 `000001`），点击「生成策略」
+   或者直接运行：
+   ```bash
+   python app.py
+   ```
+   看到 `Uvicorn running on http://127.0.0.1:8080` 即成功
+4. 浏览器访问 `http://127.0.0.1:8080`
+5. 输入股票代码（如 `000001`），点击「生成策略」
 
 ### 方式二：控制台运行
 

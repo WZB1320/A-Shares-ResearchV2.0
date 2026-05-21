@@ -185,9 +185,13 @@ class CapitalSkill:
         cum_5d = sum(values[-5:])
         cum_10d = sum(values[-10:]) if len(values) >= 10 else cum_5d
 
-        large_ratio = capital_data.get("large_order_ratio", 0.3)
-        medium_ratio = capital_data.get("medium_order_ratio", 0.4)
-        small_ratio = 1 - large_ratio - medium_ratio
+        large_ratio = capital_data.get("large_order_ratio")
+        medium_ratio = capital_data.get("medium_order_ratio")
+        if large_ratio is None:
+            large_ratio = 0
+        if medium_ratio is None:
+            medium_ratio = 0
+        small_ratio = 1 - large_ratio - medium_ratio if (large_ratio + medium_ratio) < 1 else 0
 
         trend_5d = "吸筹" if cum_5d > 0 else "派发" if cum_5d < 0 else "盘整"
         trend_10d = "资金加仓" if cum_10d > cum_5d else "资金减仓" if cum_10d < cum_5d else "持仓稳定"

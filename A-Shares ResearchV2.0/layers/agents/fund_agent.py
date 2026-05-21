@@ -8,16 +8,13 @@ logger = logging.getLogger("FundAgent")
 from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.fund_skill import FundSkill, fund_skill
+from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
 
-REPORT_MAX_TOKENS = 1800
-LLM_TEMPERATURE = 0.3
+REPORT_MAX_TOKENS = 1200
+LLM_TEMPERATURE = 0.1
 
 
 class FundAgent:
-    """
-    基本面Agent - 纯执行层（机构级标准化）
-    职责：调用 FundSkill 进行机构级基本面分析 + LLM 生成机构级研报
-    """
 
     def __init__(self, model_name: str = DEFAULT_MODEL, data_connector: Optional[DataConnector] = None):
         self.model_name = model_name.lower()
@@ -25,7 +22,7 @@ class FundAgent:
         self.data_connector = data_connector
         self.fund_skill = fund_skill
 
-    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> str:
+    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> Dict:
         logger.info(f"[FundAgent] 开始机构级基本面分析: {stock_code}")
 
         fundamental_data = None
@@ -37,73 +34,109 @@ class FundAgent:
 
         if fundamental_data is None:
             logger.warning(f"[FundAgent] 无基本面数据: {stock_code}")
-            return f"⚠️ {stock_code} 基本面数据不可用，无法生成分析报告"
+            return unavailable_report("fund").to_dict()
 
         try:
             signals = self.fund_skill.analyze(fundamental_data)
         except Exception as e:
             error_msg = f"基本面指标计算失败：{str(e)}"
             logger.error(f"[FundAgent] {error_msg}")
-            return f"⚠️ {stock_code} {error_msg}"
+            return error_report("fund", error_msg).to_dict()
 
-        prompt = f"""你是一位资深券商基本面分析师，请基于以下机构级财务分析数据，撰写一份专业的基本面研判报告。
+        prompt = f"""你是一位资深券商基本面分析师，请基于以下财务分析数据，输出一份结构化的基本面研判报告。
 
-股票代码：{stock_code}
+{self._build_data_context(stock_code, signals)}
 
-【盈利能力】
-ROE：{signals.profitability.roe:.2f}%
-净利率：{signals.profitability.net_margin:.2f}%
-毛利率：{signals.profitability.gross_margin:.2f}%
-ROA：{signals.profitability.roa:.2f}%
+请严格按以下JSON格式输出（不要包含任何其他文字，只输出JSON）：
+{{
+  "dimension": "fund",
+  "overall_score": 78,
+  "grade": "看多",
+  "confidence": 80,
+  "thesis": "一句话核心判断",
+  "key_signals": ["信号1", "信号2", "信号3"],
+  "risk_factors": ["风险1", "风险2"],
+  "recommendation": "操作建议",
+  "supporting_data": {{
+    "profitability": {{"quality": "高/中/低", "roe_level": "优秀/良好/一般/差"}},
+    "growth": {{"stage": "高速增长/稳健增长/低速/衰退", "sustainability": "高/中/低"}},
+    "balance": {{"leverage": "偏低/适中/偏高/危险", "liquidity": "充裕/正常/偏紧"}},
+    "cashflow": {{"quality": "健康/一般/恶化", "ocf_match": "匹配/偏离"}}
+  }}
+}}
 
-【杜邦分析】
-净利率贡献：{signals.dupont.net_margin_contribution:.2f}%
-周转率贡献：{signals.dupont.turnover_contribution:.2f}%
-杠杆贡献：{signals.dupont.leverage_contribution:.2f}%
+分析推理步骤（必须按此顺序分步思考）：
+Step 1: 评估盈利能力，基于ROE、净利率、ROA，判断盈利质量处于行业什么水平
+Step 2: 评估成长能力，基于营收增速、利润增速，判断增长的可持续性
+Step 3: 评估资产负债健康度，基于资产负债率、流动比率，判断财务安全性
+Step 4: 评估现金流质量，基于经营现金流/净利润，判断盈利是否真金白银
+Step 5: 综合以上四步骤，加权得出综合评分和投资评级
 
-【成长能力】
-营收增速：{signals.growth.revenue_growth:.2f}%
-利润增速：{signals.growth.profit_growth:.2f}%
-扣非增速：{signals.growth.deducted_growth:.2f}%
-
-【资产负债】
-资产负债率：{signals.balance_sheet.debt_ratio:.2f}%
-流动比率：{signals.balance_sheet.current_ratio:.2f}
-速动比率：{signals.balance_sheet.quick_ratio:.2f}
-
-【盈利质量】
-经营现金流/净利润：{signals.quality.cash_flow_match:.2f}
-
-【基本面综合评分】
-评分：{signals.overall_score:.1f}/100
-评级：{signals.fund_level}
-
-请按以下结构输出报告（800-1000字）：
-1. 盈利质量评估（ROE杜邦拆解+现金流匹配度）
-2. 成长性分析（营收/利润/扣非增速趋势）
-3. 财务健康度（资产负债结构+偿债能力）
-4. 经营效率（周转率+费用控制）
-5. 综合评分与投资建议
-
-要求：专业、客观、数据驱动，使用机构级术语。"""
+要求：
+1. 必须完成上述五步推理再填入JSON
+2. overall_score 必须是0-100的整数
+3. grade 必须是以下之一：强烈看多/看多/中性偏多/中性/中性偏空/看空/强烈看空
+4. confidence 必须是0-100的整数
+5. key_signals 列出3-5个关键基本面信号
+6. risk_factors 列出2-3个关键财务风险
+7. 仅基于提供的数据做判断，不编造数据
+8. 只输出JSON，不要输出任何其他内容"""
 
         try:
             completion = self.client.chat.completions.create(
                 model=get_model_id(self.model_name),
                 messages=[
-                    {"role": "system", "content": "你是一位资深券商基本面分析师，擅长财务分析和企业价值评估。请用专业、客观的语言撰写报告。"},
+                    {"role": "system", "content": "你是一位资深券商基本面分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=LLM_TEMPERATURE,
                 max_tokens=REPORT_MAX_TOKENS
             )
-            report = completion.choices[0].message.content.strip()
-            logger.info(f"[FundAgent] 机构级基本面分析完成: {stock_code}")
-            return report
+            raw = completion.choices[0].message.content.strip()
+            report = parse_json_report(raw, "fund")
+            logger.info(f"[FundAgent] 结构化基本面分析完成: {stock_code} | score={report.overall_score} grade={report.grade}")
+            return report.to_dict()
         except Exception as e:
-            error_msg = f"生成{stock_code}基本面报告失败：{str(e)}"
+            error_msg = f"LLM调用失败：{str(e)}"
             logger.error(f"[FundAgent] {error_msg}")
-            return f"⚠️ {error_msg}"
+            return error_report("fund", error_msg).to_dict()
+
+    @staticmethod
+    def _build_data_context(stock_code: str, signals) -> str:
+        return f"""股票代码：{stock_code}
+
+【盈利能力】
+ROE：{signals.profitability.roe_ttm:.2f}%
+净利率：{signals.profitability.net_margin:.2f}%
+毛利率：{signals.profitability.gross_margin:.2f}%
+ROA：{signals.profitability.roa_ttm:.2f}%
+盈利质量：{signals.profitability.profit_quality.value}
+
+【杜邦分析】
+ROE驱动因素：{signals.profitability.dupont.roe_contribution}
+净利率：{signals.profitability.dupont.net_margin}%
+资产周转率：{signals.profitability.dupont.asset_turnover}
+权益乘数：{signals.profitability.dupont.equity_multiplier}
+
+【成长能力】
+营收同比增速：{signals.growth.revenue_growth_yoy:.2f}%
+利润同比增速：{signals.growth.profit_growth_yoy:.2f}%
+扣非增速：{signals.growth.deducted_profit_growth:.2f}%
+成长阶段：{signals.growth.growth_stage}
+
+【资产负债】
+资产负债率：{signals.balance_sheet.debt_to_asset:.2f}%
+流动比率：{signals.balance_sheet.current_ratio:.2f}
+速动比率：{signals.balance_sheet.quick_ratio:.2f}
+资产质量：{signals.balance_sheet.asset_quality}
+
+【盈利质量】
+经营现金流/净利润：{signals.cash_flow.ocf_to_net_profit:.2f}
+现金流质量：{signals.cash_flow.cash_quality}
+
+【基本面综合评分】
+评分：{signals.overall_score}/100
+评级：{signals.investment_grade}"""
 
 
 def fund_agent_node(state: dict) -> dict:
