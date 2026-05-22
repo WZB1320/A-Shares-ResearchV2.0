@@ -27,9 +27,11 @@ class ValuationAgent:
 
         valuation_data = None
         fundamental_data = None
+        quality_context = None
         if state is not None:
             valuation_data = state.get("valuation_data")
             fundamental_data = state.get("fundamental_data") or state.get("financial_data")
+            quality_context = state.get("quality_context")
 
         if valuation_data is None and self.data_connector is not None:
             valuation_data = self.data_connector.fetch_valuation_data()
@@ -48,6 +50,8 @@ class ValuationAgent:
             return error_report("valuation", error_msg).to_dict()
 
         prompt = f"""你是一位资深券商估值分析师，请基于以下估值分析数据，输出一份结构化的估值研判报告。
+
+{quality_context or ''}
 
 {self._build_data_context(stock_code, signals)}
 

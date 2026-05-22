@@ -27,9 +27,11 @@ class RiskAgent:
 
         financial_data = None
         tech_data = None
+        quality_context = None
         if state is not None:
             financial_data = state.get("financial_data") or state.get("fundamental_data")
             tech_data = state.get("tech_data")
+            quality_context = state.get("quality_context")
 
         if financial_data is None and self.data_connector is not None:
             financial_data = self.data_connector.fetch_financial_data()
@@ -48,6 +50,8 @@ class RiskAgent:
             return error_report("risk", error_msg).to_dict()
 
         prompt = f"""你是一位资深券商风控分析师，请基于以下风险分析数据，输出一份结构化的风险评估报告。
+
+{quality_context or ''}
 
 {self._build_data_context(stock_code, signals)}
 

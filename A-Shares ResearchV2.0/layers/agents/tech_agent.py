@@ -26,8 +26,10 @@ class TechAgent:
         logger.info(f"[TechAgent] 开始机构级技术面分析: {stock_code}")
 
         tech_data = None
+        quality_context = None
         if state is not None:
             tech_data = state.get("tech_data")
+            quality_context = state.get("quality_context")
 
         if tech_data is None and self.data_connector is not None:
             tech_data = self.data_connector.fetch_tech_data()
@@ -44,6 +46,8 @@ class TechAgent:
             return error_report("tech", error_msg).to_dict()
 
         prompt = f"""你是一位资深券商技术分析师，请基于以下量价技术分析数据，输出一份结构化的技术研判报告。
+
+{quality_context or ''}
 
 {self._build_data_context(stock_code, signals)}
 

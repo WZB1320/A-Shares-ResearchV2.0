@@ -26,8 +26,10 @@ class FundAgent:
         logger.info(f"[FundAgent] 开始机构级基本面分析: {stock_code}")
 
         fundamental_data = None
+        quality_context = None
         if state is not None:
             fundamental_data = state.get("fundamental_data") or state.get("financial_data")
+            quality_context = state.get("quality_context")
 
         if fundamental_data is None and self.data_connector is not None:
             fundamental_data = self.data_connector.fetch_fundamental_data()
@@ -44,6 +46,8 @@ class FundAgent:
             return error_report("fund", error_msg).to_dict()
 
         prompt = f"""你是一位资深券商基本面分析师，请基于以下财务分析数据，输出一份结构化的基本面研判报告。
+
+{quality_context or ''}
 
 {self._build_data_context(stock_code, signals)}
 

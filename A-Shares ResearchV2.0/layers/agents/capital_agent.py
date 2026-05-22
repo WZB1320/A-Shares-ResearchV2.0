@@ -26,8 +26,10 @@ class CapitalAgent:
         logger.info(f"[CapitalAgent] 开始机构级资金面分析: {stock_code}")
 
         capital_data = None
+        quality_context = None
         if state is not None:
             capital_data = state.get("capital_data")
+            quality_context = state.get("quality_context")
 
         if capital_data is None and self.data_connector is not None:
             capital_data = self.data_connector.fetch_capital_data()
@@ -44,6 +46,8 @@ class CapitalAgent:
             return error_report("capital", error_msg).to_dict()
 
         prompt = f"""你是一位资深券商资金面分析师，请基于以下资金流向分析数据，输出一份结构化的资金面研判报告。
+
+{quality_context or ''}
 
 {self._build_data_context(stock_code, signals)}
 

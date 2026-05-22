@@ -19,6 +19,7 @@ from layers.agents.report_schema import (
     AgentReport, aggregate_reports, reports_to_markdown,
     error_report, unavailable_report
 )
+from layers.validators import validator as data_validator
 
 REPORT_MAX_TOKENS = 3000
 LLM_TEMPERATURE = 0.3
@@ -67,16 +68,23 @@ class ChiefAgent:
             logger.error(f"[ChiefAgent] {error_msg}")
             return f"# {stock_code} 深度投研策略报告\n\n⚠️ {error_msg}"
 
+        validate_start = time.time()
+        quality_report = data_validator.validate_all(all_data)
+        quality_context = quality_report.to_context_string()
+        logger.info(
+            f"[ChiefAgent] 数据质量校验完成: {stock_code} | 评分: {quality_report.overall_score}/100 ({quality_report.overall_grade}) | 耗时: {time.time() - validate_start:.1f}s"
+        )
+
         agent_start = time.time()
         logger.info(f"[ChiefAgent] 各维度Agent并行分析开始 | 选中: {selected_agents}")
 
         agents_map = {
-            "tech": (TechAgent, {"tech_data": tech_data}),
-            "fund": (FundAgent, {"fundamental_data": fundamental_data}),
-            "capital": (CapitalAgent, {"capital_data": capital_data}),
-            "industry": (IndustryAgent, {"fundamental_data": fundamental_data}),
-            "risk": (RiskAgent, {"financial_data": financial_data, "tech_data": tech_data}),
-            "valuation": (ValuationAgent, {"valuation_data": valuation_data, "fundamental_data": fundamental_data}),
+            "tech": (TechAgent, {"tech_data": tech_data, "quality_context": quality_context}),
+            "fund": (FundAgent, {"fundamental_data": fundamental_data, "quality_context": quality_context}),
+            "capital": (CapitalAgent, {"capital_data": capital_data, "quality_context": quality_context}),
+            "industry": (IndustryAgent, {"fundamental_data": fundamental_data, "quality_context": quality_context}),
+            "risk": (RiskAgent, {"financial_data": financial_data, "tech_data": tech_data, "quality_context": quality_context}),
+            "valuation": (ValuationAgent, {"valuation_data": valuation_data, "fundamental_data": fundamental_data, "quality_context": quality_context}),
         }
 
         active_agents = {k: v for k, v in agents_map.items() if k in selected_agents}
@@ -118,9 +126,26 @@ class ChiefAgent:
 
         final_report = self.synthesize_reports(stock_code, reports)
 
+        # 构建图表数据
+        from chart_builder import chart_builder
+        reports_dict = {name: r.to_dict() for name, r in reports.items()}
+        chart_data = chart_builder.build(stock_code, all_data, reports_dict)
+
+        # 构建对话上下文（精简版分析摘要）
+        aggregation = aggregate_reports(reports)
+        context_text = self._build_context_text(stock_code, aggregation, reports_dict)
+
         total_time = time.time() - start_time
-        logger.info(f"[ChiefAgent] 机构级综合投研分析完成: {stock_code} | 总耗时: {total_time:.1f}s")
-        return final_report
+        logger.info(f"[ChiefAgent] 机构级综合投研分析完成: {stock_code} | 总耗时: {total_time:.1f}s | 图表类型: {len(chart_data)}")
+
+        return {
+            "final_report": final_report,
+            "reports": reports_dict,
+            "chart_data": chart_data,
+            "overall_grade": aggregation.get("overall_grade", "中性"),
+            "overall_score": aggregation.get("overall_score", 50),
+            "context_text": context_text,
+        }
 
     def synthesize_reports(self, stock_code: str, reports: Dict[str, AgentReport]) -> str:
         logger.info(f"[ChiefAgent] 开始综合研报汇总: {stock_code}")
@@ -263,12 +288,49 @@ Step 5: 基于以上四步，制定具体的操作策略建议
 """
             return header
 
+    def _build_context_text(self, stock_code: str, aggregation: Dict,
+                            reports_dict: Dict) -> str:
+        """构建对话上下文精简摘要，供ChatEngine使用"""
+        dim_names = {"tech": "技术面", "fund": "基本面", "capital": "资金面",
+                     "industry": "行业面", "risk": "风险面", "valuation": "估值面"}
+
+        lines = [
+            f"股票代码：{stock_code}",
+            f"综合评分：{aggregation.get('overall_score', 50)}/100",
+            f"综合评级：{aggregation.get('overall_grade', '中性')}",
+            f"多空共识：{aggregation.get('consensus', '无数据')}",
+            f"有效维度：{aggregation.get('valid_count', 0)}/{aggregation.get('dimension_count', 0)}",
+            "",
+            "各维度摘要：",
+        ]
+
+        for dim_name, info in aggregation.get("dimensions", {}).items():
+            label = dim_names.get(dim_name, dim_name)
+            lines.append(
+                f"- {label}：{info['score']}分 {info['grade']} | {info['thesis']}"
+            )
+            for sig in info.get("signals", [])[:2]:
+                lines.append(f"  · {sig}")
+            for risk in info.get("risks", [])[:2]:
+                lines.append(f"  · 风险：{risk}")
+
+        if aggregation.get("conflicts"):
+            lines.append("")
+            lines.append("信号分歧：")
+            for c in aggregation["conflicts"]:
+                lines.append(f"  · {c}")
+
+        return "\n".join(lines)
+
 
 def chief_agent_node(state: dict) -> dict:
     stock_code = state["stock_code"]
     agent = ChiefAgent(model_name=DEFAULT_MODEL)
-    final_report = agent.analyze(stock_code, state)
-    state["final_report"] = final_report
+    result = agent.analyze(stock_code, state)
+    if isinstance(result, dict):
+        state["final_report"] = result.get("final_report", "")
+    else:
+        state["final_report"] = result
     return state
 
 
