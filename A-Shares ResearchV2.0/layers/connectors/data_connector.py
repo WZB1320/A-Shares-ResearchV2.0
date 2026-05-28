@@ -628,12 +628,18 @@ class DataConnector:
     def fetch_all(self) -> Dict:
         """获取所有维度数据"""
         logger.info(f"[DataConnector] 开始获取全量数据: {self.stock_code}")
+        df_tech = self.fetch_tech_data()
+        
+        # 确保 tech_data 按日期升序排列（最新日期在最后）
+        if not df_tech.empty and "date" in df_tech.columns:
+            df_tech = df_tech.sort_values("date").reset_index(drop=True)
+        
         all_data = {
             "stock_code": self.stock_code,
             "basic_info": self.fetch_basic_info(),
             "capital_data": self.fetch_capital_data(),
             "fundamental_data": self.fetch_fundamental_data(),
-            "tech_data": self.fetch_tech_data().to_dict("records"),
+            "tech_data": df_tech.to_dict("records"),
             "valuation_data": self.fetch_valuation_data(),
             "financial_data": self.fetch_financial_data()
         }

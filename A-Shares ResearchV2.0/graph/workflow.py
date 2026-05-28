@@ -13,6 +13,7 @@ LangGraph 工作流 - Harness 架构并行调度层
 """
 import logging
 import re
+import time
 from typing import Dict, TypedDict, Optional, List, Any, Callable
 
 from langgraph.graph import StateGraph, END
@@ -28,6 +29,7 @@ from layers.agents.valuation_agent import ValuationAgent
 from layers.agents.chief_agent import ChiefAgent
 from harness.validator import harness_validator
 from layers.agents.report_schema import AgentReport
+from layers.agents.debate import run_debate_rounds, build_debate_summary
 
 logger = logging.getLogger("Graph-Workflow")
 
@@ -516,8 +518,26 @@ def chief_agent_node(state: AgentState) -> Dict[str, Any]:
                 )
 
     agent = ChiefAgent()
+
+    debate_summary = ""
+    if len(reports_to_synthesize) >= 3:
+        try:
+            debate_start = time.time()
+            debate_reports, debate_results = run_debate_rounds(reports_to_synthesize)
+            debate_summary = build_debate_summary(reports_to_synthesize, debate_results)
+            reports_to_synthesize = debate_reports
+            changed = sum(1 for r in debate_results.values() if r.changed)
+            logger.info(
+                f"[Workflow] 多Agent辩论完成 | {changed}个修订 | 耗时: {time.time() - debate_start:.1f}s"
+            )
+        except Exception as de:
+            logger.warning(f"[Workflow] 辩论流程异常，跳过: {de}")
+
     try:
         final_report = agent.synthesize_reports(stock_code, reports_to_synthesize)
+
+        if debate_summary:
+            final_report += "\n\n---\n\n" + debate_summary
     except Exception as e:
         logger.error(f"[Workflow] chief_agent 汇总异常: {e}")
         fallback_parts = []

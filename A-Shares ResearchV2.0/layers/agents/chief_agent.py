@@ -19,7 +19,13 @@ from layers.agents.report_schema import (
     AgentReport, aggregate_reports, reports_to_markdown,
     error_report, unavailable_report
 )
+from layers.agents.debate import (
+    run_debate_rounds, build_debate_summary, CROSS_PAIRINGS, DIM_LABELS as DEBATE_LABELS
+)
 from layers.validators import validator as data_validator
+from layers.memory.knowledge_base import (
+    save_snapshot, build_tracking_context, get_report_consensus,
+)
 
 REPORT_MAX_TOKENS = 3000
 LLM_TEMPERATURE = 0.0
@@ -92,16 +98,34 @@ class ChiefAgent:
             f"[ChiefAgent] 数据质量校验完成: {stock_code} | 评分: {quality_report.overall_score}/100 ({quality_report.overall_grade}) | 耗时: {time.time() - validate_start:.1f}s"
         )
 
+        # === 知识库：注入历史跟踪上下文 + 研报共识 ===
+        mem_start = time.time()
+        try:
+            tracking_context = build_tracking_context(stock_code)
+            report_consensus = get_report_consensus(stock_code)
+        except Exception as e:
+            logger.warning(f"[ChiefAgent] 知识库查询失败: {e}")
+            tracking_context = ""
+            report_consensus = ""
+
+        full_context_parts = [quality_context]
+        if tracking_context and "首次分析" not in tracking_context:
+            full_context_parts.append(tracking_context)
+        if report_consensus and "无存量研报" not in report_consensus:
+            full_context_parts.append(report_consensus)
+        full_context = "\n\n".join(full_context_parts)
+        logger.info(f"[ChiefAgent] 知识库上下文注入完成 | 耗时: {time.time() - mem_start:.1f}s")
+
         agent_start = time.time()
         logger.info(f"[ChiefAgent] 各维度Agent并行分析开始 | 选中: {selected_agents}")
 
         agents_map = {
-            "tech": (TechAgent, {"tech_data": tech_data, "quality_context": quality_context}),
-            "fund": (FundAgent, {"fundamental_data": fundamental_data, "quality_context": quality_context}),
-            "capital": (CapitalAgent, {"capital_data": capital_data, "quality_context": quality_context}),
-            "industry": (IndustryAgent, {"fundamental_data": fundamental_data, "quality_context": quality_context}),
-            "risk": (RiskAgent, {"financial_data": financial_data, "tech_data": tech_data, "quality_context": quality_context}),
-            "valuation": (ValuationAgent, {"valuation_data": valuation_data, "fundamental_data": fundamental_data, "quality_context": quality_context}),
+            "tech": (TechAgent, {"tech_data": tech_data, "quality_context": full_context}),
+            "fund": (FundAgent, {"fundamental_data": fundamental_data, "quality_context": full_context}),
+            "capital": (CapitalAgent, {"capital_data": capital_data, "quality_context": full_context}),
+            "industry": (IndustryAgent, {"fundamental_data": fundamental_data, "quality_context": full_context}),
+            "risk": (RiskAgent, {"financial_data": financial_data, "tech_data": tech_data, "quality_context": full_context}),
+            "valuation": (ValuationAgent, {"valuation_data": valuation_data, "fundamental_data": fundamental_data, "quality_context": full_context}),
         }
 
         active_agents = {k: v for k, v in agents_map.items() if k in selected_agents}
@@ -141,7 +165,27 @@ class ChiefAgent:
 
         logger.info(f"[ChiefAgent] 并行分析完成 | 耗时: {time.time() - agent_start:.1f}s")
 
+        # ====== Phase 2+3: 多智能体辩论（交叉审阅 + 修订轮） ======
+        debate_start = time.time()
+        try:
+            debate_reports, debate_results = run_debate_rounds(reports, self.model_name)
+
+            debate_summary = build_debate_summary(reports, debate_results)
+
+            reports = debate_reports
+
+            changed_count = sum(1 for r in debate_results.values() if r.changed)
+            logger.info(
+                f"[ChiefAgent] 辩论完成 | {changed_count} 个Agent修订评分 | 耗时: {time.time() - debate_start:.1f}s"
+            )
+        except Exception as e:
+            logger.warning(f"[ChiefAgent] 辩论流程异常，使用原始报告: {e}")
+            debate_summary = ""
+
         final_report = self.synthesize_reports(stock_code, reports)
+
+        if debate_summary:
+            final_report += "\n\n---\n\n" + debate_summary
 
         # 构建图表数据
         from chart_builder import chart_builder
@@ -154,6 +198,36 @@ class ChiefAgent:
 
         total_time = time.time() - start_time
         logger.info(f"[ChiefAgent] 机构级综合投研分析完成: {stock_code} | 总耗时: {total_time:.1f}s | 图表类型: {len(chart_data)}")
+
+        # === 知识库持久化：保存分析快照 ===
+        try:
+            dim_scores = {}
+            for dim_name, info in aggregation.get("dimensions", {}).items():
+                dim_scores[dim_name] = info.get("score", 50)
+
+            price = None
+            basic_info = all_data.get("basic_info", {}) or {}
+            if basic_info:
+                price = basic_info.get("最新价") or basic_info.get("price")
+
+            key_conclusion = ""
+            aggregation_subset = aggregation or {}
+            all_signals = aggregation_subset.get("all_signals", []) or []
+
+            save_snapshot(
+                stock_code=stock_code,
+                overall_score=aggregation.get("overall_score", 50),
+                overall_grade=aggregation.get("overall_grade", "中性"),
+                dimension_scores=dim_scores,
+                key_conclusion=key_conclusion,
+                top_signals=all_signals[:5],
+                top_risks=(aggregation.get("all_risks", []) or [])[:5],
+                price_at_analysis=price,
+                full_report_md=final_report,
+            )
+            logger.info(f"[ChiefAgent] 分析快照已存储: {stock_code}")
+        except Exception as e:
+            logger.warning(f"[ChiefAgent] 知识库存储失败: {e}")
 
         return {
             "final_report": final_report,
