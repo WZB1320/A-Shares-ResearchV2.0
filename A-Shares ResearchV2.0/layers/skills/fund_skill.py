@@ -531,6 +531,27 @@ class FundSkill:
     def analyze(financial_data: Dict) -> FundSignals:
         logger.info("[FundSkill] 开始机构级基本面分析")
 
+        # ── 数据可用性检测：核心指标全为 0 → 标记为数据不可用 ──
+        core_keys = [
+            financial_data.get("roe", 0), financial_data.get("净资产收益率", 0),
+            financial_data.get("gross_profit_margin", 0), financial_data.get("毛利率", 0),
+            financial_data.get("debt_to_asset", 0), financial_data.get("资产负债率", 0),
+        ]
+        if all(v == 0 for v in core_keys):
+            logger.warning("[FundSkill] 核心财务数据不可用，返回空信号")
+            return FundSignals(
+                profitability=ProfitabilityMetrics(0, 0, 0, 0, 0, 0,
+                    DupontAnalysis(0, 0, 0, 0, "数据不可用"), ProfitQuality.POOR, 0, 0),
+                balance_sheet=BalanceSheetStructure(0, 0, 0, 0, 0, 0, 0, "数据不可用", 0),
+                cash_flow=CashFlowMetrics(0, 0, 0, 0, 0, "数据不可用", 0),
+                growth=GrowthMetrics(0, 0, 0, 0, 0, 0, False, "数据不可用", "数据不可用", 0),
+                operation=OperationalMetrics(0, 0, 0, 0, 0, "数据不可用", 0),
+                overall_score=0,
+                investment_grade="数据不足-无法评级",
+                research_advice="财务数据缺失，建议通过Finnhub或Yahoo Finance补充数据",
+                risk_warnings=["核心财务数据不可用，无法进行有效基本面分析"],
+            )
+
         profitability = FundSkill.analyze_profitability(financial_data)
         balance_sheet = FundSkill.analyze_balance_sheet(financial_data)
         cash_flow = FundSkill.analyze_cash_flow(financial_data)

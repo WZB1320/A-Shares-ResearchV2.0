@@ -8,6 +8,10 @@ akshare>=1.10.0
 tushare>=1.2.89
 requests>=2.31.0
 
+# 港股 + 美股数据接口
+yfinance>=0.2.40
+finnhub-python>=2.4.4
+
 # 可视化
 matplotlib>=3.7.0
 

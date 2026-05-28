@@ -22,7 +22,7 @@ from layers.agents.report_schema import (
 from layers.validators import validator as data_validator
 
 REPORT_MAX_TOKENS = 3000
-LLM_TEMPERATURE = 0.3
+LLM_TEMPERATURE = 0.0
 MAX_PARALLEL_WORKERS = 6
 
 
@@ -52,7 +52,16 @@ class ChiefAgent:
         except Exception as e:
             error_msg = f"数据连接器初始化失败：{str(e)}"
             logger.error(f"[ChiefAgent] {error_msg}")
-            return f"# {stock_code} 深度投研策略报告\n\n⚠️ {error_msg}"
+            er = error_report("system", error_msg).to_dict()
+            return {
+                "final_report": f"# {stock_code} 深度投研策略报告\n\n⚠️ {error_msg}",
+                "reports": {d: error_report(d, error_msg).to_dict() for d in selected_agents},
+                "chart_data": {},
+                "overall_grade": "数据不可用",
+                "overall_score": 0,
+                "context_text": "",
+                "_error": True,
+            }
 
         data_start = time.time()
         try:
@@ -66,7 +75,15 @@ class ChiefAgent:
         except Exception as e:
             error_msg = f"数据获取失败：{str(e)}"
             logger.error(f"[ChiefAgent] {error_msg}")
-            return f"# {stock_code} 深度投研策略报告\n\n⚠️ {error_msg}"
+            return {
+                "final_report": f"# {stock_code} 深度投研策略报告\n\n⚠️ {error_msg}",
+                "reports": {d: error_report(d, error_msg).to_dict() for d in selected_agents},
+                "chart_data": {},
+                "overall_grade": "数据不可用",
+                "overall_score": 0,
+                "context_text": "",
+                "_error": True,
+            }
 
         validate_start = time.time()
         quality_report = data_validator.validate_all(all_data)

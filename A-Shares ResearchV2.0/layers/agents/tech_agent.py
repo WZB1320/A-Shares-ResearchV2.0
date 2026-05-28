@@ -11,7 +11,7 @@ from layers.skills.tech_skill import TechSkill, tech_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report, AgentReport
 
 REPORT_MAX_TOKENS = 1200
-LLM_TEMPERATURE = 0.1
+LLM_TEMPERATURE = 0.0
 
 
 class TechAgent:

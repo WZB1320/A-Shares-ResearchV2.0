@@ -40,6 +40,10 @@ class EnvConfig:
         raise ValueError("AKSHARE_TIMEOUT必须是数字！请检查.env文件")
     TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
 
+    # ===== 外部数据源 API Keys =====
+    FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")   # Finnhub 美股数据
+    FUTU_API_KEY = os.getenv("FUTU_API_KEY", "")           # 富途 OpenAPI（可选）
+
     # 可选：快速检查模型配置是否完整（比如用通义千问时，校验Key是否为空）
     def check_model_config(self, model_name: str) -> bool:
         """检查指定模型的API Key是否配置"""

@@ -11,7 +11,7 @@ from layers.skills.fund_skill import FundSkill, fund_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
 
 REPORT_MAX_TOKENS = 1200
-LLM_TEMPERATURE = 0.1
+LLM_TEMPERATURE = 0.0
 
 
 class FundAgent:
@@ -106,36 +106,63 @@ Step 5: 综合以上四步骤，加权得出综合评分和投资评级
             return error_report("fund", error_msg).to_dict()
 
     @staticmethod
+    def _fmt(value, suffix="", precision=2):
+        """格式化数值，0 或 None 标记为数据缺失"""
+        if value is None or value == 0:
+            return "数据缺失"
+        fmt_str = f"{{:.{precision}f}}"
+        return f"{fmt_str.format(value)}{suffix}"
+
+    @staticmethod
     def _build_data_context(stock_code: str, signals) -> str:
-        return f"""股票代码：{stock_code}
+        f = FundAgent._fmt
+        # 统计缺失维度数
+        metrics = [
+            signals.profitability.roe_ttm,
+            signals.profitability.net_margin,
+            signals.profitability.gross_margin,
+            signals.growth.revenue_growth_yoy,
+            signals.growth.profit_growth_yoy,
+            signals.balance_sheet.debt_to_asset,
+            signals.balance_sheet.current_ratio,
+            signals.cash_flow.ocf_to_net_profit,
+        ]
+        missing_count = sum(1 for v in metrics if v is None or v == 0)
+        data_note = ""
+        if missing_count > 0:
+            data_note = (f"\n⚠ 数据覆盖度警告：{len(metrics)}项核心指标中{missing_count}项数据缺失。"
+                         f"请仅基于有数据的指标做判断，缺失指标不要参与评分，"
+                         f"不要将「数据缺失」曲解为「盈利能力差」。")
+
+        return f"""股票代码：{stock_code}{data_note}
 
 【盈利能力】
-ROE：{signals.profitability.roe_ttm:.2f}%
-净利率：{signals.profitability.net_margin:.2f}%
-毛利率：{signals.profitability.gross_margin:.2f}%
-ROA：{signals.profitability.roa_ttm:.2f}%
-盈利质量：{signals.profitability.profit_quality.value}
+ROE：{f(signals.profitability.roe_ttm, '%')}
+净利率：{f(signals.profitability.net_margin, '%')}
+毛利率：{f(signals.profitability.gross_margin, '%')}
+ROA：{f(signals.profitability.roa_ttm, '%')}
+盈利质量：{signals.profitability.profit_quality.value if signals.profitability.roe_ttm else '数据不足无法评估'}
 
 【杜邦分析】
-ROE驱动因素：{signals.profitability.dupont.roe_contribution}
-净利率：{signals.profitability.dupont.net_margin}%
-资产周转率：{signals.profitability.dupont.asset_turnover}
-权益乘数：{signals.profitability.dupont.equity_multiplier}
+ROE驱动因素：{signals.profitability.dupont.roe_contribution if signals.profitability.roe_ttm else '数据缺失'}
+净利率：{f(signals.profitability.dupont.net_margin, '%') if signals.profitability.dupont.net_margin else '数据缺失'}
+资产周转率：{signals.profitability.dupont.asset_turnover if signals.profitability.dupont.asset_turnover else '数据缺失'}
+权益乘数：{signals.profitability.dupont.equity_multiplier if signals.profitability.dupont.equity_multiplier else '数据缺失'}
 
 【成长能力】
-营收同比增速：{signals.growth.revenue_growth_yoy:.2f}%
-利润同比增速：{signals.growth.profit_growth_yoy:.2f}%
-扣非增速：{signals.growth.deducted_profit_growth:.2f}%
+营收同比增速：{f(signals.growth.revenue_growth_yoy, '%')}
+利润同比增速：{f(signals.growth.profit_growth_yoy, '%')}
+扣非增速：{f(signals.growth.deducted_profit_growth, '%')}
 成长阶段：{signals.growth.growth_stage}
 
 【资产负债】
-资产负债率：{signals.balance_sheet.debt_to_asset:.2f}%
-流动比率：{signals.balance_sheet.current_ratio:.2f}
-速动比率：{signals.balance_sheet.quick_ratio:.2f}
+资产负债率：{f(signals.balance_sheet.debt_to_asset, '%')}
+流动比率：{f(signals.balance_sheet.current_ratio)}
+速动比率：{f(signals.balance_sheet.quick_ratio)}
 资产质量：{signals.balance_sheet.asset_quality}
 
 【盈利质量】
-经营现金流/净利润：{signals.cash_flow.ocf_to_net_profit:.2f}
+经营现金流/净利润：{f(signals.cash_flow.ocf_to_net_profit)}
 现金流质量：{signals.cash_flow.cash_quality}
 
 【基本面综合评分】

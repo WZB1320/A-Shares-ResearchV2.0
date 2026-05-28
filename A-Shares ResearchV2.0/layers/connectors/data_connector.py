@@ -49,9 +49,41 @@ def _standardize_stock_code(stock_code: str) -> str:
         return "sz" + stock_code
 
 
+def _classify_market(stock_code: str) -> str:
+    """
+    识别股票所属市场
+      "ashare" — A股：sh/sz 开头，或 6 位纯数字
+      "hk"     — 港股：5 位纯数字，或 HK. 前缀
+      "us"     — 美股（中概股）：纯字母 ticker，或 US. 前缀
+    """
+    code = stock_code.strip().upper()
+
+    if code.startswith(("HK.", "HK")):
+        return "hk"
+    if code.startswith(("US.", "US")):
+        return "us"
+    if code.startswith(("SH", "SZ")):
+        return "ashare"
+
+    clean = code.replace(".", "")
+    if clean.isdigit():
+        if len(clean) == 5:
+            return "hk"
+        return "ashare"  # 6位数字 → A股
+    if clean.isalpha():
+        return "us"
+
+    return "ashare"  # fallback
+
+
 class DataSourceType(Enum):
     """数据源类型"""
     LOCAL_API = "local_api"
+    AKSHARE = "akshare"
+    SINA = "sina"
+    FUTU = "futu"
+    FINNHUB = "finnhub"
+    YAHOO = "yahoo"
 
 
 class DataSourceBase(ABC):
@@ -417,34 +449,92 @@ def retry_decorator(max_retries: int = DATA_FETCH_RETRY, delay: float = 2.0):
 
 class DataConnector:
     """
-    Anthropic 标准 Connector 层 - 本地API数据源统一入口
+    Anthropic 标准 Connector 层 — 多市场数据源统一入口
+    支持 A股（本地API）、港股（AkShare/新浪/富途）、美股中概股（Finnhub/Yahoo）
     """
 
     def __init__(self, stock_code: str, primary_source: str = "auto"):
-        # 自动标准化股票代码格式
-        self.stock_code = _standardize_stock_code(stock_code)
-        self._original_code = stock_code  # 保存原始代码
+        self._original_code = stock_code
+        self._market = _classify_market(stock_code)
+        self.stock_code = _standardize_stock_code(stock_code) if self._market == "ashare" else stock_code.strip()
         self._cache: Dict[str, Any] = {}
-        self._sources: Dict[str, DataSourceBase] = {}
+        self._sources: Dict[str, Any] = {}
         self._primary_source: Optional[str] = None
 
         # 初始化数据源
         self._init_sources(primary_source)
 
-        logger.info(f"[DataConnector] 初始化 | 原始代码={stock_code} | 标准代码={self.stock_code} | 主数据源={self._primary_source}")
+        logger.info(
+            f"[DataConnector] 初始化 | 原始代码={stock_code} | 市场={self._market} | "
+            f"标准代码={self.stock_code} | 主数据源={self._primary_source}"
+        )
 
     def _init_sources(self, primary_source: str) -> None:
-        """初始化所有可用数据源"""
-        local_api_ds = LocalAPIDataSource()
+        """根据市场类型初始化数据源（优先级链）"""
+        from layers.connectors.market_data_sources import (
+            AkShareDataSource, YahooDataSource, FinnhubDataSource,
+            SinaDataSource, FutuDataSource,
+        )
 
-        if local_api_ds.available:
-            self._sources["local_api"] = local_api_ds
+        if self._market == "ashare":
+            # === A 股：本地 API → 新浪降级 ===
+            local = LocalAPIDataSource()
+            if local.available:
+                self._sources["local_api"] = local
+                self._primary_source = "local_api"
+            else:
+                # 降级到 Sina 外部数据源（K线 + 基本信息）
+                logger.warning("[DataConnector] 本地API不可用，降级到新浪外部数据源")
+                sina = SinaDataSource()
+                if sina.available:
+                    self._sources["sina"] = sina
+                    self._primary_source = "sina"
+            if not self._sources:
+                raise RuntimeError(
+                    "没有可用的A股数据源！请确保本地API服务正在运行 http://127.0.0.1:8000，"
+                    "或检查网络连接以使用新浪外部数据源"
+                )
 
-        if not self._sources:
-            raise RuntimeError("没有可用的数据源！请确保本地API服务正在运行 http://127.0.0.1:8000")
+        elif self._market == "hk":
+            # === 港股：AkShare → 新浪 → 富途 优先级 ===
+            sources = [
+                ("akshare", AkShareDataSource()),
+                ("sina", SinaDataSource()),
+                ("futu", FutuDataSource()),
+            ]
+            for name, src in sources:
+                if src.available:
+                    self._sources[name] = src
+                    if self._primary_source is None:
+                        self._primary_source = name
 
-        # 确定主数据源
-        self._primary_source = "local_api"
+            if not self._sources:
+                raise RuntimeError(
+                    "没有可用的港股数据源！请安装 akshare: pip install akshare"
+                )
+
+        elif self._market == "us":
+            # === 美股：Sina → AkShare → Finnhub → Yahoo 优先级 ===
+            sources = [
+                ("sina", SinaDataSource()),
+                ("akshare", AkShareDataSource()),
+                ("finnhub", FinnhubDataSource()),
+                ("yahoo", YahooDataSource()),
+            ]
+            for name, src in sources:
+                if src.available:
+                    self._sources[name] = src
+                    if self._primary_source is None:
+                        self._primary_source = name
+
+            if not self._sources:
+                raise RuntimeError(
+                    "没有可用的美股数据源！请检查网络连接或安装 akshare: pip install akshare"
+                )
+
+        # 如果指定了特定数据源，尝试切换
+        if primary_source != "auto" and primary_source in self._sources:
+            self._primary_source = primary_source
 
     def _get_source(self, source_name: Optional[str] = None) -> DataSourceBase:
         """获取指定数据源，默认返回主数据源"""
@@ -458,16 +548,27 @@ class DataConnector:
         return self._cache[key]
 
     def _fetch_with_fallback(self, fetch_method: str, *args, **kwargs) -> Any:
-        """带缓存的数据获取"""
-        primary = self._get_source()
-        try:
-            method = getattr(primary, fetch_method)
-            result = method(self.stock_code, *args, **kwargs)
-            logger.info(f"[DataConnector] {fetch_method} 从 {primary.name} 获取成功")
-            return result
-        except Exception as e:
-            logger.error(f"[DataConnector] {fetch_method} 获取失败: {str(e)[:100]}")
-            return self._get_empty_result(fetch_method)
+        """多源降级获取：按优先级依次尝试，主源失败自动切换到备用源"""
+        ordered_sources = [
+            self._primary_source,
+            *[s for s in self._sources if s != self._primary_source]
+        ]
+
+        last_error = None
+        for src_name in ordered_sources:
+            try:
+                src = self._sources[src_name]
+                method = getattr(src, fetch_method)
+                result = method(self.stock_code, *args, **kwargs)
+                logger.info(f"[DataConnector] {fetch_method} 从 {src_name} 获取成功")
+                return result
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[DataConnector] {fetch_method} 从 {src_name} 失败: {str(e)[:80]}")
+
+        if last_error:
+            logger.error(f"[DataConnector] {fetch_method} 所有数据源均失败: {str(last_error)[:100]}")
+        return self._get_empty_result(fetch_method)
 
     def _get_empty_result(self, fetch_method: str) -> Any:
         """获取空结果 — 使用 None 标记不可用数据，下游可据此判断数据缺失"""
