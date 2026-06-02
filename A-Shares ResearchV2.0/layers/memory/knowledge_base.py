@@ -289,5 +289,77 @@ def get_report_count(stock_code: str) -> int:
         conn.close()
 
 
+# ==================== 事件时间线 ====================
+
+def save_timeline_event(
+    stock_code: str,
+    event_date: str,
+    event_type: str,
+    title: str,
+    impact: str = "",
+    summary: str = "",
+) -> bool:
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO stock_timeline
+               (stock_code, event_date, event_type, title, impact, summary)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (stock_code.strip(), event_date, event_type, title, impact, summary),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[KB] 保存事件失败 ({stock_code}): {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def save_analysis_as_events(stock_code: str, aggregation: Dict, final_report: str = "") -> int:
+    """从分析结果中提取重大事件写入时间线"""
+    saved = 0
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    all_signals = aggregation.get("all_signals", []) or []
+    all_risks = aggregation.get("all_risks", []) or []
+
+    for signal in all_signals[:3]:
+        if save_timeline_event(
+            stock_code=stock_code,
+            event_date=today,
+            event_type="signal",
+            title=signal[:200],
+            impact="正面" if any(w in signal for w in ["看多", "买入", "金叉", "突破", "流入", "增长"]) else "中性",
+            summary="",
+        ):
+            saved += 1
+
+    for risk in all_risks[:3]:
+        if save_timeline_event(
+            stock_code=stock_code,
+            event_date=today,
+            event_type="risk",
+            title=risk[:200],
+            impact="负面",
+            summary="",
+        ):
+            saved += 1
+
+    return saved
+
+
+def get_timeline(stock_code: str, limit: int = 20) -> List[Dict]:
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM stock_timeline WHERE stock_code = ? ORDER BY event_date DESC LIMIT ?",
+            (stock_code.strip(), limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 # ==================== 启动初始化 ====================
 init_kb()

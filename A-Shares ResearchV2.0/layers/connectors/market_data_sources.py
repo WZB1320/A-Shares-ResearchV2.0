@@ -154,7 +154,7 @@ class AkShareDataSource(MarketDataSourceBase):
         try:
             import akshare as ak  # noqa: F401
             self.available = True
-            logger.info("[AkShare] 数据源已激活 (港股+美股)")
+            logger.info("[AkShare] 数据源已激活 (A股+港股+美股)")
         except ImportError:
             self.available = False
             logger.warning("[AkShare] akshare 未安装，数据源不可用")
@@ -168,6 +168,17 @@ class AkShareDataSource(MarketDataSourceBase):
         return code.isalpha() and not code.isdigit()
 
     @staticmethod
+    def _is_ashare_stock(stock_code: str) -> bool:
+        """判断是否为A股（sh/sz 前缀 或 6位纯数字）"""
+        code = stock_code.strip().upper()
+        if code.startswith(("SH", "SZ")):
+            return True
+        clean = code.replace(".", "")
+        if clean.isdigit() and len(clean) == 6:
+            return True
+        return False
+
+    @staticmethod
     def _clean_code(stock_code: str) -> str:
         """统一清理股票代码"""
         code = stock_code.strip().upper()
@@ -179,6 +190,13 @@ class AkShareDataSource(MarketDataSourceBase):
         """港股代码标准化: 00700 或 HK.00700 → 00700"""
         code = stock_code.strip().replace("HK.", "").replace("hk.", "")
         return code.zfill(5) if code.isdigit() else code
+
+    @staticmethod
+    def _clean_ashare_code(stock_code: str) -> str:
+        """A股代码标准化: sh600519 或 600519 → 600519"""
+        code = stock_code.strip().upper()
+        code = code.replace("SH", "").replace("SZ", "").replace(".SH", "").replace(".SZ", "")
+        return code.zfill(6) if code.isdigit() else code
 
     @staticmethod
     def _find_us_symbol(stock_code: str) -> Optional[str]:
@@ -212,6 +230,8 @@ class AkShareDataSource(MarketDataSourceBase):
 
         if self._is_us_stock(stock_code):
             return self._fetch_basic_info_us(stock_code)
+        if self._is_ashare_stock(stock_code):
+            return self._fetch_basic_info_ashare(stock_code)
         return self._fetch_basic_info_hk(stock_code)
 
     def _fetch_basic_info_hk(self, stock_code: str) -> Dict:
@@ -267,6 +287,8 @@ class AkShareDataSource(MarketDataSourceBase):
             return {"north": [], "margin": [], "dragon": [], "_data_unavailable": True}
         if self._is_us_stock(stock_code):
             return {"north": [], "margin": [], "dragon": [], "note": "美股不提供资金流向数据"}
+        if self._is_ashare_stock(stock_code):
+            return self._fetch_capital_ashare(stock_code)
 
         try:
             import akshare as ak
@@ -287,11 +309,28 @@ class AkShareDataSource(MarketDataSourceBase):
             logger.warning(f"[AkShare] capital_data 获取失败: {e}")
             return {"north": [], "margin": [], "dragon": [], "south": [], "_data_unavailable": True}
 
+    def _fetch_capital_ashare(self, stock_code: str) -> Dict:
+        try:
+            import akshare as ak
+            north = []
+            try:
+                north_df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+                if not north_df.empty:
+                    north = north_df.tail(30).to_dict("records")
+            except Exception:
+                pass
+            return {"north": north, "margin": [], "dragon": [], "note": "A股：北向资金"}
+        except Exception as e:
+            logger.warning(f"[AkShare] capital_data(A股) 获取失败: {e}")
+            return {"north": [], "margin": [], "dragon": [], "_data_unavailable": True}
+
     def fetch_fundamental_data(self, stock_code: str) -> Dict:
         if not self.available:
             return {"finance": [], "valuation": {}, "industry_stocks": [], "basic_info": {}, "_data_unavailable": True}
         if self._is_us_stock(stock_code):
             return self._fetch_fundamental_us(stock_code)
+        if self._is_ashare_stock(stock_code):
+            return self._fetch_fundamental_ashare(stock_code)
         return self._fetch_fundamental_hk(stock_code)
 
     def _fetch_fundamental_hk(self, stock_code: str) -> Dict:
@@ -354,13 +393,189 @@ class AkShareDataSource(MarketDataSourceBase):
                     "basic_info": basic_info}
         except Exception as e:
             logger.warning(f"[AkShare] fundamental_data(US) 获取失败({stock_code}): {e}")
+            return {"finance": [], "valuation": {}, "industry_stocks": [], "basic_info": basic_info, "_data_unavailable": True}
+
+    # ── A 股数据获取（兜底用） ──
+
+    def _fetch_basic_info_ashare(self, stock_code: str) -> Dict:
+        try:
+            import akshare as ak
+            code = self._clean_ashare_code(stock_code)
+            try:
+                spot_df = ak.stock_zh_a_spot_em()
+                row = spot_df[spot_df["代码"] == code]
+                if not row.empty:
+                    r = row.iloc[0]
+                    return {
+                        "股票代码": code, "名称": str(r.get("名称", "")),
+                        "行业": str(r.get("所属行业", "")), "来源": "akshare",
+                        "最新价": float(r.get("最新价", 0) or 0),
+                        "涨跌幅": float(r.get("涨跌幅", 0) or 0),
+                    }
+            except Exception:
+                pass
+            return {"股票代码": code, "行业": "", "来源": "akshare", "_no_data": True}
+        except Exception as e:
+            logger.warning(f"[AkShare] basic_info(A股) 获取失败({stock_code}): {e}")
+            return {}
+
+    def _fetch_fundamental_ashare(self, stock_code: str) -> Dict:
+        try:
+            import akshare as ak
+            import re
+            code = self._clean_ashare_code(stock_code)
+            basic_info = self._fetch_basic_info_ashare(stock_code)
+
+            valuation = {}
+            try:
+                fin_df = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
+                if not fin_df.empty:
+                    latest = fin_df.iloc[-1]
+
+                    def _pct(val) -> float:
+                        s = str(val).replace("%", "").strip()
+                        try:
+                            return float(s) / 100.0
+                        except (ValueError, TypeError):
+                            return 0.0
+
+                    valuation = {
+                        "市盈率": 0,
+                        "市净率": 0,
+                        "净资产收益率": _pct(latest.get("净资产收益率", 0)),
+                        "总市值": 0,
+                        "营业总收入": AkShareDataSource._parse_ashare_value(latest.get("营业总收入", 0)),
+                        "归属净利润": AkShareDataSource._parse_ashare_value(latest.get("净利润", 0)),
+                        "销售毛利率": _pct(latest.get("销售毛利率", 0)),
+                        "销售净利率": _pct(latest.get("销售净利率", 0)),
+                        "资产负债率": _pct(latest.get("资产负债率", 0)),
+                        "净利润同比增长率": _pct(latest.get("净利润同比增长率", 0)),
+                        "营业总收入同比增长率": _pct(latest.get("营业总收入同比增长率", 0)),
+                        "股东权益": AkShareDataSource._parse_ashare_value(latest.get("股东权益", 0)),
+                        "经营活动现金流": AkShareDataSource._parse_ashare_value(latest.get("经营活动现金净流量", 0)),
+                        "流动比率": _pct(latest.get("流动比率", 0)),
+                    }
+            except Exception:
+                pass
+
+            # 尝试从实时行情补 PE/PB
+            if valuation.get("市盈率", 0) == 0:
+                try:
+                    spot_df = ak.stock_zh_a_spot_em()
+                    row = spot_df[spot_df["代码"] == code]
+                    if not row.empty:
+                        r = row.iloc[0]
+                        valuation["市盈率"] = float(r.get("市盈率-动态", r.get("市盈率", 0)) or 0)
+                        valuation["市净率"] = float(r.get("市净率", 0) or 0)
+                        valuation["总市值"] = float(r.get("总市值", 0) or 0)
+                except Exception:
+                    pass
+
+            finance = []
+            try:
+                fin_df2 = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
+                if not fin_df2.empty:
+                    finance = fin_df2.to_dict("records")
+            except Exception:
+                pass
+
+            return {
+                "finance": finance,
+                "valuation": valuation if valuation else {"_note": "AkShare未获取到估值数据"},
+                "industry_stocks": [],
+                "basic_info": basic_info,
+            }
+        except Exception as e:
+            logger.warning(f"[AkShare] fundamental_data(A股) 获取失败({stock_code}): {e}")
             return {"finance": [], "valuation": {}, "industry_stocks": [], "basic_info": {}, "_data_unavailable": True}
+
+    @staticmethod
+    def _parse_ashare_value(raw) -> float:
+        """解析A股数额字符串: '272.43亿' → 27243000000.0, '21.7600' → 21.76"""
+        import re
+        s = str(raw).strip()
+        if not s or s in ("False", "None", "nan", ""):
+            return 0.0
+        try:
+            return float(s)
+        except ValueError:
+            unit_map = {"亿": 1e8, "万": 1e4, "%": 1}
+            for unit, mult in unit_map.items():
+                if unit in s:
+                    try:
+                        return float(s.replace(unit, "").strip()) * mult
+                    except ValueError:
+                        return 0.0
+            try:
+                return float(re.sub(r"[^\d.\-]", "", s))
+            except ValueError:
+                return 0.0
+
+    def _fetch_financial_ashare(self, stock_code: str) -> Dict:
+        try:
+            import akshare as ak
+            import re
+            code = self._clean_ashare_code(stock_code)
+
+            roe = 0.0
+            gross_margin = 0.0
+            net_profit_margin = 0.0
+            revenue = 0.0
+            net_profit = 0.0
+            debt_ratio = 0.0
+            profit_growth = 0.0
+            revenue_growth = 0.0
+
+            try:
+                fin_df = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
+                if not fin_df.empty:
+                    latest = fin_df.iloc[-1]
+
+                    def _pct(val) -> float:
+                        s = str(val).replace("%", "").strip()
+                        try:
+                            return float(s) / 100.0
+                        except (ValueError, TypeError):
+                            return 0.0
+
+                    roe = _pct(latest.get("净资产收益率", 0))
+                    gross_margin = _pct(latest.get("销售毛利率", 0))
+                    net_profit_margin = _pct(latest.get("销售净利率", 0))
+                    debt_ratio = _pct(latest.get("资产负债率", 0))
+                    profit_growth = _pct(latest.get("净利润同比增长率", 0))
+                    revenue_growth = _pct(latest.get("营业总收入同比增长率", 0))
+                    revenue = AkShareDataSource._parse_ashare_value(latest.get("营业总收入", 0))
+                    net_profit = AkShareDataSource._parse_ashare_value(latest.get("净利润", 0))
+            except Exception:
+                pass
+
+            return {
+                "roe": roe,
+                "净资产收益率": roe,
+                "gross_profit_margin": gross_margin,
+                "毛利率": gross_margin,
+                "net_profit_margin": net_profit_margin,
+                "revenue": revenue,
+                "net_profit": net_profit,
+                "debt_to_asset": debt_ratio,
+                "资产负债率": debt_ratio,
+                "profit_growth": profit_growth,
+                "revenue_growth": revenue_growth,
+                "source": "akshare_ths",
+            }
+        except Exception as e:
+            logger.warning(f"[AkShare] financial_data(A股) 获取失败({stock_code}): {e}")
+            return {"roe": None, "gross_profit": None, "net_profit": None, "_data_unavailable": True}
+
+    # ── K线/技术分析 ──
 
     def fetch_tech_data(self, stock_code: str) -> pd.DataFrame:
         if not self.available:
             return pd.DataFrame()
         if self._is_us_stock(stock_code):
             return self._fetch_tech_data_us(stock_code)
+        if self._is_ashare_stock(stock_code):
+            return self._fetch_tech_data_ashare(stock_code)
         return self._fetch_tech_data_hk(stock_code)
 
     def _fetch_tech_data_hk(self, stock_code: str) -> pd.DataFrame:
@@ -409,6 +624,27 @@ class AkShareDataSource(MarketDataSourceBase):
             logger.warning(f"[AkShare] tech_data(US) 获取失败({stock_code}): {e}")
             return pd.DataFrame()
 
+    def _fetch_tech_data_ashare(self, stock_code: str) -> pd.DataFrame:
+        try:
+            import akshare as ak
+            code = self._clean_ashare_code(stock_code)
+            start = (datetime.now() - timedelta(days=365 * 2)).strftime("%Y%m%d")
+            end = datetime.now().strftime("%Y%m%d")
+
+            df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                                    start_date=start, end_date=end, adjust="qfq")
+            if df.empty:
+                logger.warning(f"[AkShare] A股{code} 无日线数据")
+                return pd.DataFrame()
+
+            df.rename(columns={"日期": "date"}, inplace=True)
+            df["date"] = pd.to_datetime(df["date"])
+            df = df[df["date"] >= TECH_INDICATOR_START_DATE]
+            return _compute_tech_indicators(df)
+        except Exception as e:
+            logger.warning(f"[AkShare] tech_data(A股) 获取失败({stock_code}): {e}")
+            return pd.DataFrame()
+
     def fetch_valuation_data(self, stock_code: str) -> Dict:
         if not self.available:
             return {"price": None, "pe_ttm": None, "pb": None, "pe_history": [], "pb_history": [], "_data_unavailable": True}
@@ -430,6 +666,8 @@ class AkShareDataSource(MarketDataSourceBase):
         if not self.available:
             return {"roe": None, "gross_profit": None, "net_profit": None, "_data_unavailable": True}
         try:
+            if self._is_ashare_stock(stock_code):
+                return self._fetch_financial_ashare(stock_code)
             fund = self.fetch_fundamental_data(stock_code)
             val = fund.get("valuation", {})
             return {
@@ -1244,6 +1482,24 @@ class SinaDataSource(MarketDataSourceBase):
                     "净资产收益率": financial.get("roe", 0),
                     "总市值": quote.get("market_cap", 0),
                 }
+            # Finnhub 补充修正 PE/PB（Sina GB 行情接口 PB 数据不可靠）
+            try:
+                from layers.connectors.market_data_sources import FinnhubDataSource
+                fh = FinnhubDataSource()
+                if fh.available:
+                    fh_fund = fh.fetch_fundamental_data(stock_code)
+                    fh_val = fh_fund.get("valuation", {})
+                    if fh_val and not fh_fund.get("_data_unavailable"):
+                        fh_pe = fh_val.get("市盈率", 0)
+                        fh_pb = fh_val.get("市净率", 0)
+                        if fh_pb and fh_pb > 0:
+                            valuation["市净率"] = fh_pb
+                            logger.info(f"[Sina] 美股 PB 从 Finnhub 修正: {quote.get('pb', 0):.2f} → {fh_pb:.2f}")
+                        if fh_pe and fh_pe > 0:
+                            valuation["市盈率"] = fh_pe
+                            logger.info(f"[Sina] 美股 PE 从 Finnhub 修正: {quote.get('pe', 0):.2f} → {fh_pe:.2f}")
+            except Exception as e:
+                logger.debug(f"[Sina] Finnhub 补充 PE/PB 跳过: {e}")
             # 注入财务指标到返回 dict 的顶层，供 fund_skill 直接读取
             result = {"finance": [], "valuation": valuation, "industry_stocks": [], "basic_info": basic_info}
             for k in ("roe", "gross_profit", "net_profit", "eps", "market_cap"):

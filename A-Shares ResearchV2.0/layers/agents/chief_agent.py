@@ -214,6 +214,15 @@ class ChiefAgent:
             aggregation_subset = aggregation or {}
             all_signals = aggregation_subset.get("all_signals", []) or []
 
+            if final_report:
+                for line in final_report.split("\n"):
+                    stripped = line.strip()
+                    if stripped.startswith("**核心结论**") or stripped.startswith("核心结论"):
+                        key_conclusion = stripped.lstrip("*").strip()
+                        break
+                if not key_conclusion and all_signals:
+                    key_conclusion = all_signals[0]
+
             save_snapshot(
                 stock_code=stock_code,
                 overall_score=aggregation.get("overall_score", 50),
@@ -228,6 +237,14 @@ class ChiefAgent:
             logger.info(f"[ChiefAgent] 分析快照已存储: {stock_code}")
         except Exception as e:
             logger.warning(f"[ChiefAgent] 知识库存储失败: {e}")
+
+        try:
+            from layers.memory.knowledge_base import save_analysis_as_events
+            event_count = save_analysis_as_events(stock_code, aggregation, final_report)
+            if event_count:
+                logger.info(f"[ChiefAgent] 事件时间线已存储: {stock_code} ({event_count}条)")
+        except Exception as e:
+            logger.warning(f"[ChiefAgent] 事件时间线存储失败: {e}")
 
         return {
             "final_report": final_report,

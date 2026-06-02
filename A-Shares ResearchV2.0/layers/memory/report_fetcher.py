@@ -195,16 +195,32 @@ def _get_watchlist_stocks() -> List[str]:
 
 # ==================== 公开接口 ====================
 
+def _is_us_stock(stock_code: str) -> bool:
+    code = stock_code.strip().upper().replace("US.", "").replace("HK.", "")
+    code = code.replace("SH", "").replace("SZ", "")
+    return code.isalpha() and not code.isdigit()
+
+
+def _is_hk_stock(stock_code: str) -> bool:
+    code = stock_code.strip().upper()
+    return code.startswith("HK.") or (code.isdigit() and len(code) == 5)
+
+
 def fetch_reports_for_stock(stock_code: str) -> List[Dict]:
     """
     获取单只股票的研报列表，经五层筛选后返回
     返回格式: [{title, institution, date, rating, pdf_url, page_count}, ...]
     """
-    if not HAS_AKSHARE:
-        logger.warning("[ReportFetcher] AkShare 未安装，跳过研报获取")
-        return []
-
     code = stock_code.strip()
+
+    if _is_us_stock(code):
+        return _fetch_us_reports(code)
+    if _is_hk_stock(code):
+        return _fetch_hk_reports(code)
+
+    if not HAS_AKSHARE:
+        logger.warning("[ReportFetcher] AkShare 未安装，跳过A股研报获取")
+        return []
     logger.info(f"[ReportFetcher] 获取研报: {code}")
 
     try:
@@ -327,3 +343,172 @@ def fetch_reports_for_watchlist() -> Dict[str, List[Dict]]:
 
     logger.info(f"[ReportFetcher] 完成: {len(stocks)} 只自选股, 共保存 {saved_count} 篇研报")
     return results
+
+
+# ==================== 美股研报（Finnhub News） ====================
+
+US_INSTITUTION_KEYWORDS = [
+    "Goldman Sachs", "Morgan Stanley", "J.P. Morgan", "Bank of America",
+    "Citigroup", "Barclays", "UBS", "Credit Suisse", "Deutsche Bank",
+    "Jefferies", "Bernstein", "Oppenheimer", "Cantor", "Piper Sandler",
+    "Raymond James", "Stifel", "Wedbush", "Cowen", "H.C. Wainwright",
+]
+
+US_RATING_MAP = {
+    "buy": "买入", "strong-buy": "强烈买入", "strong_buy": "强烈买入",
+    "outperform": "跑赢大盘", "overweight": "增持",
+    "hold": "持有", "neutral": "中性", "equal-weight": "中性",
+    "underperform": "跑输大盘", "underweight": "减持",
+    "sell": "卖出", "strong-sell": "强烈卖出",
+}
+
+
+def _fetch_us_reports(stock_code: str) -> List[Dict]:
+    """通过 Finnhub 获取美股新闻/研报"""
+    from layers.memory.knowledge_base import get_report_count
+    code = stock_code.strip().upper().replace("US.", "")
+
+    existing_count = get_report_count(stock_code)
+    if existing_count >= MAX_REPORTS_PER_STOCK:
+        logger.info(f"[ReportFetcher] {stock_code} 已有 {existing_count} 篇研报，跳过")
+        return []
+
+    try:
+        from config.llm_config import env_config
+        api_key = env_config.FINNHUB_API_KEY
+        if not api_key:
+            logger.info(f"[ReportFetcher] 无 Finnhub API Key，跳过美股研报: {code}")
+            return []
+        import finnhub
+        client = finnhub.Client(api_key=api_key)
+    except ImportError:
+        logger.info("[ReportFetcher] finnhub-python 未安装，跳过美股研报")
+        return []
+
+    cutoff = datetime.now() - timedelta(days=MAX_AGE_DAYS)
+    from_date = cutoff.strftime("%Y-%m-%d")
+    to_date = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        news = client.company_news(code, _from=from_date, to=to_date)
+    except Exception as e:
+        logger.warning(f"[ReportFetcher] Finnhub news 获取失败 ({code}): {e}")
+        return []
+
+    if not news:
+        logger.info(f"[ReportFetcher] {code} 无 Finnhub 新闻数据")
+        return []
+
+    filtered = []
+    for item in news:
+        headline = item.get("headline", "")
+        source = item.get("source", "")
+        pub_ts = item.get("datetime", 0)
+        url = item.get("url", "")
+        summary = item.get("summary", "")
+
+        if not headline:
+            continue
+
+        is_analyst = any(kw.lower() in source.lower() for kw in US_INSTITUTION_KEYWORDS)
+        has_depth = any(kw.lower() in headline.lower() for kw in [
+            "initiate", "upgrade", "downgrade", "outperform", "overweight",
+            "deep dive", "thesis", "conviction", "price target",
+        ])
+
+        if not is_analyst and not has_depth:
+            continue
+
+        try:
+            pub_date = datetime.fromtimestamp(pub_ts).strftime("%Y-%m-%d")
+        except (ValueError, OSError):
+            continue
+
+        rating = ""
+        for key, val in US_RATING_MAP.items():
+            if key in headline.lower() or key in summary.lower():
+                rating = val
+                break
+
+        filtered.append({
+            "stock_code": stock_code,
+            "title": headline[:200],
+            "institution": source,
+            "pub_date": pub_date,
+            "rating": rating,
+            "pdf_url": url,
+            "page_count": 0,
+            "report_type": "分析师报告" if is_analyst else "新闻",
+        })
+
+        if len(filtered) + existing_count >= MAX_REPORTS_PER_STOCK:
+            break
+
+    logger.info(f"[ReportFetcher] {code} Finnhub 筛选结果: {len(filtered)} 条")
+    return filtered
+
+
+# ==================== 港股研报（AkShare 港股接口） ====================
+
+def _fetch_hk_reports(stock_code: str) -> List[Dict]:
+    """港股研报 — 尝试 AkShare 港股研报接口"""
+    if not HAS_AKSHARE:
+        logger.info("[ReportFetcher] AkShare 未安装，跳过港股研报")
+        return []
+
+    from layers.memory.knowledge_base import get_report_count
+    code = stock_code.strip()
+    hk_code = code.replace("HK.", "").zfill(5)
+
+    existing_count = get_report_count(code)
+    if existing_count >= MAX_REPORTS_PER_STOCK:
+        logger.info(f"[ReportFetcher] {code} 已有 {existing_count} 篇研报，跳过")
+        return []
+
+    try:
+        df = ak.stock_hk_research_report_em(symbol=hk_code)
+    except Exception as e:
+        logger.info(f"[ReportFetcher] 港股研报获取失败 ({code}): {e}")
+        return []
+
+    if df is None or df.empty:
+        logger.info(f"[ReportFetcher] {code} 无港股研报数据")
+        return []
+
+    cutoff_date = datetime.now() - timedelta(days=MAX_AGE_DAYS)
+    filtered = []
+
+    for _, row in df.iterrows():
+        title = str(row.get("报告名称", "") or row.get("title", "") or "")
+        institution = str(row.get("机构", "") or row.get("institution", "") or "")
+        pub_date_str = str(row.get("日期", "") or row.get("pub_date", "") or "")
+        rating = str(row.get("评级", "") or row.get("rating", "") or "")
+        pdf_url = str(row.get("报告PDF链接", "") or row.get("url", "") or "")
+
+        if institution and institution not in INSTITUTION_WHITELIST:
+            if not _is_depth_report(title):
+                continue
+
+        try:
+            pub_date = datetime.strptime(pub_date_str[:10], "%Y-%m-%d")
+        except (ValueError, IndexError):
+            continue
+        if pub_date < cutoff_date:
+            continue
+
+        filtered.append({
+            "stock_code": code,
+            "title": title[:200],
+            "institution": institution,
+            "pub_date": pub_date_str[:10],
+            "rating": rating,
+            "pdf_url": pdf_url,
+            "page_count": 15,
+            "report_type": "港股研报",
+        })
+
+        if len(filtered) + existing_count >= MAX_REPORTS_PER_STOCK:
+            break
+
+    logger.info(f"[ReportFetcher] {code} 港股研报筛选结果: {len(filtered)} 篇")
+    return filtered

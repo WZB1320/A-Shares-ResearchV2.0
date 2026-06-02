@@ -8,6 +8,9 @@ from layers.memory.knowledge_base import (
     get_reports_for_stock,
     get_report_consensus,
     get_report_count,
+    save_timeline_event,
+    save_analysis_as_events,
+    get_timeline,
 )
 
 from layers.memory.report_fetcher import (
@@ -24,6 +27,9 @@ __all__ = [
     "get_reports_for_stock",
     "get_report_consensus",
     "get_report_count",
+    "save_timeline_event",
+    "save_analysis_as_events",
+    "get_timeline",
     "fetch_reports_for_watchlist",
     "fetch_reports_for_stock",
 ]

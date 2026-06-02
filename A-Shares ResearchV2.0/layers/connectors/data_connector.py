@@ -477,18 +477,21 @@ class DataConnector:
         )
 
         if self._market == "ashare":
-            # === A 股：本地 API → 新浪降级 ===
+            # === A 股：本地 API（主力） + 外部兜底（数据缺失时自动降级） ===
             local = LocalAPIDataSource()
             if local.available:
                 self._sources["local_api"] = local
                 self._primary_source = "local_api"
             else:
-                # 降级到 Sina 外部数据源（K线 + 基本信息）
-                logger.warning("[DataConnector] 本地API不可用，降级到新浪外部数据源")
-                sina = SinaDataSource()
-                if sina.available:
-                    self._sources["sina"] = sina
-                    self._primary_source = "sina"
+                logger.warning("[DataConnector] 本地API不可用，降级到外部数据源")
+
+            # 始终注册外部兜底源（本地API返回空数据时自动切换）
+            for name, src in [("akshare", AkShareDataSource()), ("sina", SinaDataSource())]:
+                if src.available and name not in self._sources:
+                    self._sources[name] = src
+                    if self._primary_source is None:
+                        self._primary_source = name
+
             if not self._sources:
                 raise RuntimeError(
                     "没有可用的A股数据源！请确保本地API服务正在运行 http://127.0.0.1:8000，"
@@ -570,6 +573,66 @@ class DataConnector:
             logger.error(f"[DataConnector] {fetch_method} 所有数据源均失败: {str(last_error)[:100]}")
         return self._get_empty_result(fetch_method)
 
+    @staticmethod
+    def _is_financial_data_empty(data: Dict) -> bool:
+        """判断财务数据是否实质上为空（core_keys 全为 0）"""
+        if not data:
+            return True
+        core_keys = [
+            data.get("roe", 0), data.get("净资产收益率", 0),
+            data.get("gross_profit", 0), data.get("gross_profit_margin", 0),
+            data.get("毛利率", 0), data.get("net_profit", 0),
+            data.get("net_profit_margin", 0),
+        ]
+        return all(v == 0 or v is None or v == "数据获取异常"
+                   for v in core_keys)
+
+    @staticmethod
+    def _is_fundamental_data_empty(data: Dict) -> bool:
+        """判断基本面数据是否实质上为空"""
+        if not data:
+            return True
+        finance = data.get("finance", [])
+        valuation = data.get("valuation", {})
+        has_finance = isinstance(finance, list) and len(finance) > 0
+        has_valuation = bool(valuation) and any(
+            v for k, v in valuation.items()
+            if k not in ("_data_unavailable", "_note") and v is not None and v != 0
+        )
+        if has_finance or has_valuation:
+            return False
+        return True
+
+    def _fetch_with_quality_fallback(self, fetch_method: str, empty_checker: callable) -> Any:
+        """质量感知降级：主源返回空数据时自动尝试备用源，不依赖异常抛出"""
+        ordered_sources = [
+            self._primary_source,
+            *[s for s in self._sources if s != self._primary_source]
+        ]
+
+        last_error = None
+        for src_name in ordered_sources:
+            try:
+                src = self._sources[src_name]
+                method = getattr(src, fetch_method)
+                result = method(self.stock_code)
+                if empty_checker(result):
+                    logger.warning(
+                        f"[DataConnector] {fetch_method} 从 {src_name} 获取到空数据，尝试降级"
+                    )
+                    continue
+                logger.info(f"[DataConnector] {fetch_method} 从 {src_name} 获取成功（质量通过）")
+                return result
+            except Exception as e:
+                last_error = str(e)[:80]
+                logger.warning(f"[DataConnector] {fetch_method} 从 {src_name} 异常: {last_error}")
+
+        if last_error:
+            logger.error(f"[DataConnector] {fetch_method} 所有数据源均失败或返回空数据: {last_error}")
+        else:
+            logger.warning(f"[DataConnector] {fetch_method} 所有数据源均返回空数据")
+        return self._get_empty_result(fetch_method)
+
     def _get_empty_result(self, fetch_method: str) -> Any:
         """获取空结果 — 使用 None 标记不可用数据，下游可据此判断数据缺失"""
         empty_results = {
@@ -598,9 +661,11 @@ class DataConnector:
 
     @retry_decorator()
     def fetch_fundamental_data(self) -> Dict:
-        """获取基本面数据（财务+估值+行业对标）"""
+        """获取基本面数据（财务+估值+行业对标），本地API空数据时自动降级到外部源"""
         def _fetch():
-            return self._fetch_with_fallback("fetch_fundamental_data")
+            return self._fetch_with_quality_fallback(
+                "fetch_fundamental_data", self._is_fundamental_data_empty
+            )
         return self._get_cached("fundamental_data", _fetch)
 
     @retry_decorator()
@@ -620,9 +685,11 @@ class DataConnector:
 
     @retry_decorator()
     def fetch_financial_data(self) -> Dict:
-        """获取财务数据"""
+        """获取财务数据，本地API空数据时自动降级到外部源"""
         def _fetch():
-            return self._fetch_with_fallback("fetch_financial_data")
+            return self._fetch_with_quality_fallback(
+                "fetch_financial_data", self._is_financial_data_empty
+            )
         return self._get_cached("financial_data", _fetch)
 
     def fetch_all(self) -> Dict:

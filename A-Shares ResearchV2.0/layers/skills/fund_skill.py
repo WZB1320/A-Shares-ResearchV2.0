@@ -531,11 +531,49 @@ class FundSkill:
     def analyze(financial_data: Dict) -> FundSignals:
         logger.info("[FundSkill] 开始机构级基本面分析")
 
-        # ── 数据可用性检测：核心指标全为 0 → 标记为数据不可用 ──
+        def _extract_value(data_dict, *keys):
+            for k in keys:
+                v = data_dict.get(k, 0)
+                if v not in (0, None, ""):
+                    return v
+            return 0
+
+        # ── 数据正常化：嵌套 {valuation: {}} → 扁平 ──
+        # AkShare/Sina 等外部源的 fundamental_data 是嵌套结构，
+        # 把 valuation 子键提升到顶层 + 补充键名映射
+        _KEY_ALIASES = {
+            "营业总收入": ["revenue", "营业收入"],
+            "归属净利润": ["net_profit", "净利润"],
+            "营业收入": ["revenue", "营业总收入"],
+            "净利润": ["net_profit", "归属净利润"],
+            "股东权益": ["equity", "净资产"],
+            "销售毛利率": ["gross_profit_margin", "毛利率"],
+            "毛利率": ["gross_profit_margin", "销售毛利率"],
+            "销售净利率": ["net_profit_margin", "净利率"],
+            "净利率": ["net_profit_margin", "销售净利率"],
+            "资产负债率": ["debt_to_asset", "负债率"],
+            "净利润同比增长率": ["profit_growth", "利润增速"],
+            "营业总收入同比增长率": ["revenue_growth", "营收增速"],
+            "经营活动现金流": ["operating_cash_flow", "经营现金流"],
+            "流动比率": ["current_ratio"],
+        }
+        if isinstance(financial_data, dict):
+            valuation = financial_data.get("valuation", {})
+            if isinstance(valuation, dict) and valuation:
+                merged = dict(valuation)
+                merged.update({k: v for k, v in financial_data.items() if k != "valuation"})
+                for src_key, aliases in _KEY_ALIASES.items():
+                    val = merged.get(src_key)
+                    if val is not None and val != 0:
+                        for alias in aliases:
+                            if alias not in merged or merged.get(alias, 0) == 0:
+                                merged[alias] = val
+                financial_data = merged
+
         core_keys = [
-            financial_data.get("roe", 0), financial_data.get("净资产收益率", 0),
-            financial_data.get("gross_profit_margin", 0), financial_data.get("毛利率", 0),
-            financial_data.get("debt_to_asset", 0), financial_data.get("资产负债率", 0),
+            _extract_value(financial_data, "roe", "净资产收益率"),
+            _extract_value(financial_data, "gross_profit_margin", "毛利率"),
+            _extract_value(financial_data, "debt_to_asset", "资产负债率"),
         ]
         if all(v == 0 for v in core_keys):
             logger.warning("[FundSkill] 核心财务数据不可用，返回空信号")

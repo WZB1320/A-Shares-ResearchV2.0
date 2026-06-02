@@ -148,7 +148,7 @@ def api_watchlist_remove(stock_code: str):
 
 @app.post("/api/watchlist/refresh")
 def api_watchlist_refresh():
-    """一键刷新所有自选股分析"""
+    """一键刷新所有自选股分析 + 自动拉取研报"""
     wl = watchlist_get_all()
     results = []
     for item in wl:
@@ -178,6 +178,14 @@ def api_watchlist_refresh():
                 results.append({"code": code, "status": "ok"})
         except Exception as e:
             results.append({"code": code, "status": "error", "error": str(e)[:100]})
+
+    try:
+        from layers.memory.report_fetcher import fetch_reports_for_watchlist
+        report_results = fetch_reports_for_watchlist()
+        report_count = sum(len(v) for v in report_results.values())
+        logging.getLogger("App").info(f"[App] 自选股研报拉取完成: {report_count} 篇")
+    except Exception as e:
+        logging.getLogger("App").warning(f"[App] 自选股研报拉取失败: {e}")
 
     return JSONResponse({"results": results, "watchlist": watchlist_get_all()})
 
