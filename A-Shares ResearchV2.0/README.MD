@@ -56,6 +56,9 @@
 - **数据校验体系**：HarnessValidator验证数据完整性、股票代码格式、估值指标合理性
 - **并行调度优化**：HarnessScheduler支持多Agent并行执行与失败重试机制
 - **✨ 自选股管理**：支持添加/删除自选股、批量刷新快照
+- **✨ 知识库持久化**：分析快照自动存储、历史回溯对比、核心结论追踪
+- **✨ 机构研报获取**：五层筛选（白名单/深度/时效/自选股/上限），支持A股+港股+美股研报自动拉取
+- **✨ 事件时间线**：分析信号与风险自动写入时间线，支持事件回溯
 - **✨ ECharts可视化**：8种图表（K线/MACD/KDJ/RSI/雷达图/估值仪表/资金流向/杜邦分析）
 - **✨ 上下文对话**：分析完成后可基于报告继续追问（"估值合理吗？""主要风险是什么？"）
 - **✨ 三栏布局Web UI**：左侧自选股、中间分析区、右侧对话面板，支持异步AJAX分析
@@ -122,7 +125,14 @@ A-Shares-ResearchV3.0-Harness/
 │       ├── industry_agent.py  # 行业面Agent
 │       ├── risk_agent.py      # 风险面Agent
 │       ├── valuation_agent.py # 估值面Agent
-│       └── chief_agent.py     # 首席Agent（整合报告 + chart_data + context_text）
+│       ├── chief_agent.py     # 首席Agent（整合报告 + chart_data + context_text）
+│       ├── debate.py          # 多Agent辩论机制（跨维度审阅+修订）
+│       └── report_schema.py   # 结构化报告Schema（AgentReport/聚合/评分映射）
+│
+├── layers/memory/          # 知识库 + 研报管理
+│   ├── __init__.py
+│   ├── knowledge_base.py     # SQLite知识库（分析快照/研报/事件时间线）
+│   └── report_fetcher.py     # 研报获取器（A股AkShare + 港股AkShare + 美股Finnhub）
 │
 ├── graph/                  # LangGraph 工作流（兼容备用）
 │   └── workflow.py
@@ -159,6 +169,7 @@ A-Shares-ResearchV3.0-Harness/
 - **左侧自选股**：输入6位股票代码点击「+添加」，支持删除和批量刷新快照
 - **中间分析区**：输入股票代码点击「开始分析」→ 异步AJAX分析 → 显示评分徽章 + 8种ECharts图表 + Markdown报告
 - **右侧对话面板**：分析完成后自动激活，可基于报告内容继续追问（如："当前估值合理吗？"、"主要风险是什么？"）
+- **知识库自动积累**：每次分析自动保存快照（评分/结论/信号/风险），刷新自选股时自动拉取机构研报，分析信号与风险自动写入事件时间线
 - **两种入口**：
   - 输入框直接输入代码 → 分析单只股票
   - 点击自选股列表中的任意一项 → 快速分析
@@ -189,7 +200,7 @@ python test_architecture.py
 | GET | `/api/watchlist` | 查询自选股列表 | JSON: `[{stock_code, stock_name, last_price, last_grade, ...}]` |
 | POST | `/api/watchlist` | 添加自选股 | JSON: `{"stock_code": "600519"}` |
 | DELETE | `/api/watchlist/{stock_code}` | 删除自选股 | JSON: `{"success": true}` |
-| POST | `/api/watchlist/refresh` | 批量刷新自选股快照 | JSON: `{"results": [...]}` |
+| POST | `/api/watchlist/refresh` | 批量刷新自选股快照 + 自动拉取研报 | JSON: `{"results": [...]}` |
 | POST | `/api/analyze` | AJAX异步分析股票 | JSON: `{"stock_code": "600519", "agents": ["tech", "fund", ...]}` → 返回 `{success, final_report, chart_data, overall_grade, overall_score}` |
 | POST | `/api/chat` | 上下文对话追问 | JSON: `{"stock_code": "600519", "messages": [...], "new_message": "估值合理吗？"}` → 返回 `{reply}` |
 
@@ -208,6 +219,28 @@ python test_architecture.py
 ### 数据源
 
 默认使用 AkShare 免费数据源，同时支持 Tushare Pro（需配置 Token）。系统自动检测可用数据源并在失败时自动降级切换，详见 `layers/connectors/data_connector.py`。
+
+### 知识库架构
+
+知识库基于 SQLite 持久化存储（`data/knowledge/stock_memory.db`），包含三张核心表：
+
+| 表名 | 用途 | 写入时机 |
+|------|------|----------|
+| `analysis_snapshots` | 每次分析的评分/结论/信号/风险快照 | ChiefAgent 分析完成后自动写入 |
+| `research_reports` | 机构券商研报（标题/机构/评级/摘要） | 刷新自选股时自动拉取 |
+| `stock_timeline` | 重大信号与风险事件时间线 | ChiefAgent 分析完成后自动写入 |
+
+**研报获取五层筛选漏斗**：
+1. **机构白名单**：Top 30 券商（中金/中信/华泰等）
+2. **深度报告**：标题含"深度/首次覆盖/专题"等关键词，排除"晨会/日报/点评"
+3. **时效性**：发布时间 ≤ 180天
+4. **自选股限定**：仅拉取自选股列表中的股票研报
+5. **数量上限**：每只股票最多保留 10 篇（最新优先）
+
+**多市场研报支持**：
+- A股：AkShare 东方财富研报接口
+- 港股：AkShare 港股研报接口
+- 美股：Finnhub Company News API（需配置 `FINNHUB_API_KEY`）
 
 ## 七、Agent分析维度说明
 

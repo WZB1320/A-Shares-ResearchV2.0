@@ -21,7 +21,7 @@ CAPITAL_DATA_DAYS = 30
 FINANCE_DATA_YEARS = 3
 INDUSTRY_STOCK_LIMIT = 10
 TECH_DATA_START_DATE = "2023-01-01"
-API_BASE_URL = "http://127.0.0.1:8000"
+API_BASE_URL = "http://127.0.0.1:8001"
 
 
 def _standardize_stock_code(stock_code: str) -> str:

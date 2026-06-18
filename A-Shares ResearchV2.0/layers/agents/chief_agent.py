@@ -34,11 +34,74 @@ MAX_PARALLEL_WORKERS = 6
 
 class ChiefAgent:
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, data_connector: Optional[DataConnector] = None):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        data_connector: Optional[DataConnector] = None,
+        use_scheduler: bool = False,
+    ):
+        """
+        Args:
+            model_name: LLM 模型名
+            data_connector: 数据连接器（可选，未提供则内部创建）
+            use_scheduler: 是否使用 HarnessScheduler 编排分析阶段
+                - False（默认）: 使用原 ThreadPoolExecutor 并行块（兼容模式）
+                - True: 使用 HarnessScheduler，带状态管理/重试/检查点
+                验证通过后默认值将改为 True
+        """
         self.model_name = model_name.lower()
         self.client = get_llm_client(self.model_name)
         self.data_connector = data_connector
+        self.use_scheduler = use_scheduler
         self.selected_agents = None
+        self.scheduler = self._build_scheduler() if use_scheduler else None
+        if use_scheduler:
+            logger.info("[ChiefAgent] 启用 HarnessScheduler 编排模式")
+
+    def _build_scheduler(self):
+        """构建并注册所有分析 Agent 到 HarnessScheduler"""
+        from harness.scheduler import HarnessScheduler, SchedulerConfig
+
+        scheduler = HarnessScheduler(SchedulerConfig(
+            max_retries=2,
+            parallel_execution=True,
+            max_workers=MAX_PARALLEL_WORKERS,
+            checkpoint_enabled=True,
+            validation_enabled=False,  # ChiefAgent 已有自己的数据校验
+        ))
+
+        # 注册各 Agent + 数据依赖构建器
+        scheduler.register_agent(
+            "tech", TechAgent,
+            data_payload_builder=lambda d: {"tech_data": d.get("tech_data")},
+        )
+        scheduler.register_agent(
+            "fund", FundAgent,
+            data_payload_builder=lambda d: {"fundamental_data": d.get("fundamental_data")},
+        )
+        scheduler.register_agent(
+            "capital", CapitalAgent,
+            data_payload_builder=lambda d: {"capital_data": d.get("capital_data")},
+        )
+        scheduler.register_agent(
+            "industry", IndustryAgent,
+            data_payload_builder=lambda d: {"fundamental_data": d.get("fundamental_data")},
+        )
+        scheduler.register_agent(
+            "risk", RiskAgent,
+            data_payload_builder=lambda d: {
+                "financial_data": d.get("financial_data") or d.get("fundamental_data"),
+                "tech_data": d.get("tech_data"),
+            },
+        )
+        scheduler.register_agent(
+            "valuation", ValuationAgent,
+            data_payload_builder=lambda d: {
+                "valuation_data": d.get("valuation_data"),
+                "fundamental_data": d.get("fundamental_data"),
+            },
+        )
+        return scheduler
 
     def analyze(self, stock_code: str, state: Optional[Dict] = None) -> str:
         start_time = time.time()
@@ -131,21 +194,41 @@ class ChiefAgent:
         active_agents = {k: v for k, v in agents_map.items() if k in selected_agents}
         raw_reports = {}
 
-        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
-            future_to_agent = {}
-            for name, (AgentClass, sub_state) in active_agents.items():
-                agent = AgentClass(model_name=self.model_name)
-                future = executor.submit(agent.analyze, stock_code, sub_state)
-                future_to_agent[future] = name
+        if self.use_scheduler and self.scheduler is not None:
+            # ── 新路径：HarnessScheduler 编排（带状态管理/重试/检查点） ──
+            logger.info("[ChiefAgent] 使用 HarnessScheduler 编排分析阶段")
+            try:
+                raw_reports = self.scheduler.run_analysis_agents(
+                    stock_code=stock_code,
+                    all_data=all_data,
+                    selected_agents=selected_agents,
+                    model_name=self.model_name,
+                    quality_context=full_context,
+                )
+            except Exception as e:
+                logger.error(
+                    f"[ChiefAgent] Scheduler 执行异常，回退到 legacy 模式: {e}"
+                )
+                raw_reports = self._run_agents_legacy(
+                    active_agents, stock_code
+                )
 
-            for future in as_completed(future_to_agent):
-                agent_name = future_to_agent[future]
-                try:
-                    raw_reports[agent_name] = future.result()
-                except Exception as e:
-                    error_msg = f"{agent_name}分析异常：{str(e)}"
-                    logger.error(f"[ChiefAgent] {error_msg}")
-                    raw_reports[agent_name] = error_report(agent_name, error_msg).to_dict()
+            # 质量门禁：低分报告触发重试
+            try:
+                from harness.quality_gate import QualityGate
+                gate = QualityGate()
+                raw_reports = gate.evaluate_and_retry(
+                    reports=raw_reports,
+                    stock_code=stock_code,
+                    all_data=all_data,
+                    scheduler=self.scheduler,
+                    model_name=self.model_name,
+                )
+            except Exception as e:
+                logger.warning(f"[ChiefAgent] 质量门禁异常，跳过: {e}")
+        else:
+            # ── 兼容路径：原 ThreadPoolExecutor 并行块 ──
+            raw_reports = self._run_agents_legacy(active_agents, stock_code)
 
         for name in selected_agents:
             if name not in raw_reports:
@@ -254,6 +337,42 @@ class ChiefAgent:
             "overall_score": aggregation.get("overall_score", 50),
             "context_text": context_text,
         }
+
+    def _run_agents_legacy(
+        self,
+        active_agents: Dict[str, tuple],
+        stock_code: str,
+    ) -> Dict[str, Dict]:
+        """兼容路径：原 ThreadPoolExecutor 并行执行块
+
+        当 use_scheduler=False 或 scheduler 执行异常时使用。
+        """
+        raw_reports = {}
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
+            future_to_agent = {}
+            for name, (AgentClass, sub_state) in active_agents.items():
+                agent = AgentClass(model_name=self.model_name)
+                future = executor.submit(agent.analyze, stock_code, sub_state)
+                future_to_agent[future] = name
+
+            for future in as_completed(future_to_agent):
+                agent_name = future_to_agent[future]
+                try:
+                    result = future.result()
+                    # 统一转为 dict
+                    if isinstance(result, dict):
+                        raw_reports[agent_name] = result
+                    elif hasattr(result, "to_dict"):
+                        raw_reports[agent_name] = result.to_dict()
+                    else:
+                        raw_reports[agent_name] = error_report(
+                            agent_name, "未知格式返回"
+                        ).to_dict()
+                except Exception as e:
+                    error_msg = f"{agent_name}分析异常：{str(e)}"
+                    logger.error(f"[ChiefAgent] {error_msg}")
+                    raw_reports[agent_name] = error_report(agent_name, error_msg).to_dict()
+        return raw_reports
 
     def synthesize_reports(self, stock_code: str, reports: Dict[str, AgentReport]) -> str:
         logger.info(f"[ChiefAgent] 开始综合研报汇总: {stock_code}")

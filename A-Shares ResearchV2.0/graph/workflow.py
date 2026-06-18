@@ -1,20 +1,30 @@
 """
-LangGraph 工作流 - Harness 架构并行调度层
+[DEPRECATED] LangGraph 工作流 - Harness 架构并行调度层
 
-严格按照 Harness 架构：
+⚠️ 警告：此模块已废弃，请使用 layers/agents/chief_agent.py 的 ChiefAgent 作为唯一编排入口。
+    ChiefAgent 已集成：数据获取 → 校验 → 并行分析 → 辩论 → 汇总 → 知识库存储。
+    本模块将在后续版本移除，保留仅用于回滚参考。
+
+历史功能：
   1. data_agent 统一取数
   2. 动态路由：数据驱动跳过无效 Agent
   3. Send/recv 并行执行 6 个分析 Agent
   4. quality_gate 质量门禁：自动评分 + 低分重试
   5. chief_agent 汇总生成最终研报
-
-兼容 harness/ 调度层（state / validator / scheduler）
-可直接被 main.py 调用
 """
+import warnings
 import logging
 import re
 import time
 from typing import Dict, TypedDict, Optional, List, Any, Callable
+
+# 模块加载时触发 DeprecationWarning
+warnings.warn(
+    "graph.workflow 已废弃，请使用 layers.agents.chief_agent.ChiefAgent。"
+    "本模块将在后续版本移除。",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 from langgraph.graph import StateGraph, END
 from langgraph.types import Send
