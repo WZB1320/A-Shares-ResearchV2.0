@@ -38,16 +38,15 @@ class ChiefAgent:
         self,
         model_name: str = DEFAULT_MODEL,
         data_connector: Optional[DataConnector] = None,
-        use_scheduler: bool = False,
+        use_scheduler: bool = True,
     ):
         """
         Args:
             model_name: LLM 模型名
             data_connector: 数据连接器（可选，未提供则内部创建）
             use_scheduler: 是否使用 HarnessScheduler 编排分析阶段
-                - False（默认）: 使用原 ThreadPoolExecutor 并行块（兼容模式）
-                - True: 使用 HarnessScheduler，带状态管理/重试/检查点
-                验证通过后默认值将改为 True
+                - True（默认）: 使用 HarnessScheduler，带状态管理/重试/检查点 + 质量门禁
+                - False: 使用原 ThreadPoolExecutor 并行块（兼容模式，仅用于回退）
         """
         self.model_name = model_name.lower()
         self.client = get_llm_client(self.model_name)

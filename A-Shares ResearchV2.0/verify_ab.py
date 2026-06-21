@@ -28,6 +28,14 @@ import argparse
 from pathlib import Path
 from difflib import SequenceMatcher
 
+# Windows 控制台 GBK 编码兼容：强制 stdout/stderr 使用 utf-8
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 logging.basicConfig(
