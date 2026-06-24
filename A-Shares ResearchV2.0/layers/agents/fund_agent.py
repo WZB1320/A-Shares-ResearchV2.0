@@ -8,44 +8,36 @@ logger = logging.getLogger("FundAgent")
 from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.fund_skill import FundSkill, fund_skill
-from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
+from layers.agents.base_agent import BaseAnalysisAgent
 
-REPORT_MAX_TOKENS = 1200
-LLM_TEMPERATURE = 0.0
+MAX_TOKENS = 2000
 
 
-class FundAgent:
+class FundAgent(BaseAnalysisAgent):
+    """机构级基本面分析 Agent"""
+
+    dimension = "fund"
+    MAX_TOKENS = 2000
 
     def __init__(self, model_name: str = DEFAULT_MODEL, data_connector: Optional[DataConnector] = None):
-        self.model_name = model_name.lower()
-        self.client = get_llm_client(self.model_name)
-        self.data_connector = data_connector
+        super().__init__(model_name, data_connector)
         self.fund_skill = fund_skill
 
-    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> Dict:
-        logger.info(f"[FundAgent] 开始机构级基本面分析: {stock_code}")
-
-        fundamental_data = None
-        quality_context = None
+    def _get_data(self, state: Optional[Dict]):
         if state is not None:
-            fundamental_data = state.get("fundamental_data") or state.get("financial_data")
-            quality_context = state.get("quality_context")
+            return state.get("fundamental_data") or state.get("financial_data")
+        if self.data_connector is not None:
+            return self.data_connector.fetch_fundamental_data()
+        return None
 
-        if fundamental_data is None and self.data_connector is not None:
-            fundamental_data = self.data_connector.fetch_fundamental_data()
+    def _run_skill(self, data):
+        return self.fund_skill.analyze(data)
 
-        if fundamental_data is None:
-            logger.warning(f"[FundAgent] 无基本面数据: {stock_code}")
-            return unavailable_report("fund").to_dict()
+    def _system_prompt(self) -> str:
+        return "你是一位资深券商基本面分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"
 
-        try:
-            signals = self.fund_skill.analyze(fundamental_data)
-        except Exception as e:
-            error_msg = f"基本面指标计算失败：{str(e)}"
-            logger.error(f"[FundAgent] {error_msg}")
-            return error_report("fund", error_msg).to_dict()
-
-        prompt = f"""你是一位资深券商基本面分析师，请基于以下财务分析数据，输出一份结构化的基本面研判报告。
+    def _build_prompt(self, stock_code: str, signals, quality_context: Optional[str]) -> str:
+        return f"""你是一位资深券商基本面分析师，请基于以下财务分析数据，输出一份结构化的基本面研判报告。
 
 {quality_context or ''}
 
@@ -86,36 +78,9 @@ Step 5: 综合以上四步骤，加权得出综合评分和投资评级
 7. 仅基于提供的数据做判断，不编造数据
 8. 只输出JSON，不要输出任何其他内容"""
 
-        try:
-            completion = self.client.chat.completions.create(
-                model=get_model_id(self.model_name),
-                messages=[
-                    {"role": "system", "content": "你是一位资深券商基本面分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=LLM_TEMPERATURE,
-                max_tokens=REPORT_MAX_TOKENS
-            )
-            raw = completion.choices[0].message.content.strip()
-            report = parse_json_report(raw, "fund")
-            logger.info(f"[FundAgent] 结构化基本面分析完成: {stock_code} | score={report.overall_score} grade={report.grade}")
-            return report.to_dict()
-        except Exception as e:
-            error_msg = f"LLM调用失败：{str(e)}"
-            logger.error(f"[FundAgent] {error_msg}")
-            return error_report("fund", error_msg).to_dict()
-
-    @staticmethod
-    def _fmt(value, suffix="", precision=2):
-        """格式化数值，0 或 None 标记为数据缺失"""
-        if value is None or value == 0:
-            return "数据缺失"
-        fmt_str = f"{{:.{precision}f}}"
-        return f"{fmt_str.format(value)}{suffix}"
-
     @staticmethod
     def _build_data_context(stock_code: str, signals) -> str:
-        f = FundAgent._fmt
+        f = BaseAnalysisAgent._fmt
         # 统计缺失维度数
         metrics = [
             signals.profitability.roe_ttm,
@@ -166,6 +131,8 @@ ROE驱动因素：{signals.profitability.dupont.roe_contribution if signals.prof
 现金流质量：{signals.cash_flow.cash_quality}
 
 【基本面综合评分】
+Piotroski F-Score：{signals.financial_health.piotroski_f}/9（{signals.financial_health.piotroski_grade}）
+Altman Z-Score：{signals.financial_health.altman_z}（{signals.financial_health.altman_zone}）
 评分：{signals.overall_score}/100
 评级：{signals.investment_grade}"""
 

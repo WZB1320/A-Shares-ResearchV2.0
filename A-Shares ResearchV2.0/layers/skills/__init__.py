@@ -8,7 +8,7 @@ from layers.skills.fund_skill import (
     FundSkill, fund_skill, FundSignals,
     ProfitQuality, DupontAnalysis,
     ProfitabilityMetrics, BalanceSheetStructure,
-    CashFlowMetrics, GrowthMetrics, OperationalMetrics
+    CashFlowMetrics, GrowthMetrics, OperationalMetrics, FinancialHealthScores
 )
 from layers.skills.capital_skill import (
     CapitalSkill, capital_skill, CapitalSignals,
@@ -16,7 +16,7 @@ from layers.skills.capital_skill import (
     NorthFlowMetrics, MainFundMetrics, MarginMetrics, DragonMetrics
 )
 from layers.skills.industry_skill import (
-    IndustrySkill, industry_skill, IndustrySignals, IndustryBasicInfo
+    IndustrySkill, industry_skill, IndustrySignals, IndustryBasicInfo, IndustryComparison
 )
 from layers.skills.valuation_skill import (
     ValuationSkill, valuation_skill, ValuationSignals, ValuationMetrics
@@ -36,16 +36,16 @@ __all__ = [
     "FundSkill", "fund_skill", "FundSignals",
     "ProfitQuality", "DupontAnalysis",
     "ProfitabilityMetrics", "BalanceSheetStructure",
-    "CashFlowMetrics", "GrowthMetrics", "OperationalMetrics",
+    "CashFlowMetrics", "GrowthMetrics", "OperationalMetrics", "FinancialHealthScores",
     # Capital
     "CapitalSkill", "capital_skill", "CapitalSignals",
     "CapitalTrend", "FundFlowStructure",
     "NorthFlowMetrics", "MainFundMetrics", "MarginMetrics", "DragonMetrics",
-    # Industry (simplified)
-    "IndustrySkill", "industry_skill", "IndustrySignals", "IndustryBasicInfo",
-    # Valuation (simplified)
+    # Industry
+    "IndustrySkill", "industry_skill", "IndustrySignals", "IndustryBasicInfo", "IndustryComparison",
+    # Valuation
     "ValuationSkill", "valuation_skill", "ValuationSignals", "ValuationMetrics",
-    # Risk (simplified)
+    # Risk
     "RiskSkill", "risk_skill", "RiskSignals",
     "RiskLevel", "FinancialRiskMetrics", "MarketRiskMetrics"
 ]

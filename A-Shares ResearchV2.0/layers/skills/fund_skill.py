@@ -89,12 +89,24 @@ class OperationalMetrics:
 
 
 @dataclass
+class FinancialHealthScores:
+    """Piotroski F-Score + Altman Z-Score 机构级财务健康评分"""
+    piotroski_f: int               # 0-9，≥7 为优秀
+    piotroski_grade: str           # "强(7-9)/中(4-6)/弱(0-3)"
+    piotroski_details: List[str]   # 9项因子逐项结果
+    altman_z: float                # >2.99 安全，<1.81 危险
+    altman_zone: str               # "安全区/灰色区/危险区"
+    data_available: bool
+
+
+@dataclass
 class FundSignals:
     profitability: ProfitabilityMetrics
     balance_sheet: BalanceSheetStructure
     cash_flow: CashFlowMetrics
     growth: GrowthMetrics
     operation: OperationalMetrics
+    financial_health: FinancialHealthScores
     overall_score: int
     investment_grade: str
     research_advice: str
@@ -147,7 +159,7 @@ class FundSkill:
     def analyze_profitability(financial_data: Dict) -> ProfitabilityMetrics:
         roe = FundSkill._safe_float(financial_data.get("roe", financial_data.get("净资产收益率", 0)))
         roa = FundSkill._safe_float(financial_data.get("roa", financial_data.get("总资产收益率", 0)))
-        gross = FundSkill._safe_float(financial_data.get("gross_profit_margin", financial_data.get("毛利率", 0)))
+        gross = FundSkill._safe_float(financial_data.get("gross_profit_margin", financial_data.get("gross_margin_ttm", financial_data.get("毛利率", 0))))
         net = FundSkill._safe_float(financial_data.get("net_profit_margin", financial_data.get("净利率", 0)))
         operating = FundSkill._safe_float(financial_data.get("operating_margin", 0))
         ebitda = FundSkill._safe_float(financial_data.get("ebitda_margin", 0))
@@ -528,6 +540,170 @@ class FundSkill:
         )
 
     @staticmethod
+    def calculate_piotroski_f_score(financial_data: Dict) -> FinancialHealthScores:
+        """Piotroski F-Score: 9因子财务健康评分模型 (0-9分)
+        
+        参考: Piotroski, J. (2000) "Value Investing: The Use of Historical Financial
+        Statement Information to Separate Winners from Losers"
+        """
+        details = []
+        score = 0
+        
+        # ── 盈利能力 (4项) ──
+        # 1. ROA > 0
+        roa = FundSkill._safe_float(financial_data.get("roa", financial_data.get("ROA", 0)))
+        if roa > 0:
+            score += 1; details.append("✅ ROA为正")
+        else:
+            details.append("❌ ROA为负")
+        
+        # 2. 经营现金流 > 0
+        ocf = FundSkill._safe_float(financial_data.get("operating_cash_flow", financial_data.get("经营活动现金流", 0)))
+        if ocf > 0:
+            score += 1; details.append("✅ 经营现金流为正")
+        else:
+            details.append("❌ 经营现金流为负")
+        
+        # 3. ROA 同比改善
+        roa_prev = FundSkill._safe_float(financial_data.get("roa_prev", financial_data.get("roa_last_year", 0)))
+        if roa_prev == 0:
+            roe_history = financial_data.get("roe_history", financial_data.get("ROE历史", []))
+            if len(roe_history) >= 2:
+                roa_prev = roa * (roe_history[-2] / roe_history[-1]) if roe_history[-1] != 0 else 0
+        if roa > roa_prev:
+            score += 1; details.append("✅ ROA同比改善")
+        else:
+            details.append("❌ ROA未改善")
+        
+        # 4. 经营现金流 > 净利润 (应计利润检验)
+        net_profit = FundSkill._safe_float(financial_data.get("net_profit", financial_data.get("净利润", 0)))
+        if ocf > net_profit and net_profit > 0:
+            score += 1; details.append("✅ 经营现金流 > 净利润(盈利质量好)")
+        else:
+            details.append("❌ 经营现金流 <= 净利润(盈利质量存疑)")
+        
+        # ── 财务健康/杠杆 (3项) ──
+        # 5. 资产负债率同比下降
+        debt_ratio = FundSkill._safe_float(financial_data.get("debt_to_asset", financial_data.get("资产负债率", 0)))
+        debt_ratio_prev = FundSkill._safe_float(financial_data.get("debt_to_asset_prev", 0))
+        if debt_ratio_prev == 0:
+            debt_ratio_prev = debt_ratio
+        if debt_ratio <= debt_ratio_prev:
+            score += 1; details.append("✅ 资产负债率未上升")
+        else:
+            details.append("❌ 资产负债率上升")
+        
+        # 6. 流动比率同比改善
+        current_ratio = FundSkill._safe_float(financial_data.get("current_ratio", financial_data.get("流动比率", 0)))
+        current_ratio_prev = FundSkill._safe_float(financial_data.get("current_ratio_prev", 0))
+        if current_ratio_prev == 0:
+            current_ratio_prev = current_ratio
+        if current_ratio >= current_ratio_prev:
+            score += 1; details.append("✅ 流动比率未恶化")
+        else:
+            details.append("❌ 流动比率下降")
+        
+        # 7. 无增发新股 (总股本未增加)
+        shares = FundSkill._safe_float(financial_data.get("total_shares", financial_data.get("总股本", 0)))
+        shares_prev = FundSkill._safe_float(financial_data.get("total_shares_prev", 0))
+        if shares_prev == 0 or shares <= shares_prev:
+            score += 1; details.append("✅ 无增发稀释")
+        else:
+            details.append("❌ 股本扩张(稀释)")
+        
+        # ── 运营效率 (2项) ──
+        # 8. 毛利率同比改善
+        gross_margin = FundSkill._safe_float(financial_data.get("gross_profit_margin", financial_data.get("gross_margin_ttm", financial_data.get("毛利率", 0))))
+        gross_margin_prev = FundSkill._safe_float(financial_data.get("gross_margin_prev", 0))
+        if gross_margin_prev == 0:
+            gross_margin_prev = gross_margin
+        if gross_margin >= gross_margin_prev:
+            score += 1; details.append("✅ 毛利率未下降")
+        else:
+            details.append("❌ 毛利率下降")
+        
+        # 9. 资产周转率同比改善
+        asset_turnover = FundSkill._safe_float(financial_data.get("asset_turnover", financial_data.get("总资产周转率", 0)))
+        asset_turnover_prev = FundSkill._safe_float(financial_data.get("asset_turnover_prev", 0))
+        if asset_turnover_prev == 0:
+            asset_turnover_prev = asset_turnover
+        if asset_turnover >= asset_turnover_prev:
+            score += 1; details.append("✅ 资产周转率未下降")
+        else:
+            details.append("❌ 资产周转率下降")
+        
+        if score >= 7:
+            grade = "强(7-9)"
+        elif score >= 4:
+            grade = "中(4-6)"
+        else:
+            grade = "弱(0-3)"
+        
+        altman_z, altman_zone = FundSkill._calculate_altman_z(financial_data)
+        
+        return FinancialHealthScores(
+            piotroski_f=score,
+            piotroski_grade=grade,
+            piotroski_details=details,
+            altman_z=round(altman_z, 2),
+            altman_zone=altman_zone,
+            data_available=True
+        )
+
+    @staticmethod
+    def _calculate_altman_z(financial_data: Dict):
+        """Altman Z-Score: 破产风险预测模型
+        
+        Z = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
+        阈值: >2.99安全 | 1.81-2.99灰色 | <1.81危险
+        """
+        total_assets = FundSkill._safe_float(financial_data.get("total_assets", financial_data.get("总资产", 0)))
+        if total_assets <= 0:
+            return 0.0, "数据不足"
+        
+        # X1: 营运资本 / 总资产
+        current_assets = FundSkill._safe_float(financial_data.get("current_assets", financial_data.get("流动资产", 0)))
+        current_liabilities = FundSkill._safe_float(financial_data.get("current_liabilities", financial_data.get("流动负债", 0)))
+        x1 = (current_assets - current_liabilities) / total_assets
+        
+        # X2: 留存收益 / 总资产 (近似: 净资产 - 股本)
+        equity = FundSkill._safe_float(financial_data.get("equity", financial_data.get("股东权益", 0)))
+        paid_capital = FundSkill._safe_float(financial_data.get("paid_capital", financial_data.get("实收资本", 0)))
+        retained_earnings = FundSkill._safe_float(financial_data.get("retained_earnings", financial_data.get("留存收益", 0)))
+        if retained_earnings == 0:
+            retained_earnings = equity - paid_capital
+        x2 = retained_earnings / total_assets
+        
+        # X3: EBIT / 总资产
+        ebit = FundSkill._safe_float(financial_data.get("ebit", financial_data.get("EBIT", 0)))
+        if ebit == 0:
+            net_profit = FundSkill._safe_float(financial_data.get("net_profit", financial_data.get("净利润", 0)))
+            interest = FundSkill._safe_float(financial_data.get("interest_expense", financial_data.get("利息费用", 0)))
+            tax = FundSkill._safe_float(financial_data.get("income_tax", financial_data.get("所得税", 0)))
+            ebit = net_profit + interest + tax
+        x3 = ebit / total_assets if ebit != 0 else 0
+        
+        # X4: 市值 / 总负债
+        total_liabilities = FundSkill._safe_float(financial_data.get("total_liabilities", financial_data.get("总负债", 0)))
+        market_cap = FundSkill._safe_float(financial_data.get("market_cap", financial_data.get("总市值", 0)))
+        x4 = market_cap / total_liabilities if total_liabilities > 0 else 0
+        
+        # X5: 营业收入 / 总资产
+        revenue = FundSkill._safe_float(financial_data.get("revenue", financial_data.get("营业收入", 0)))
+        x5 = revenue / total_assets
+        
+        z = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
+        
+        if z > 2.99:
+            zone = "安全区"
+        elif z > 1.81:
+            zone = "灰色区"
+        else:
+            zone = "危险区"
+        
+        return z, zone
+
+    @staticmethod
     def analyze(financial_data: Dict) -> FundSignals:
         logger.info("[FundSkill] 开始机构级基本面分析")
 
@@ -547,8 +723,8 @@ class FundSkill:
             "营业收入": ["revenue", "营业总收入"],
             "净利润": ["net_profit", "归属净利润"],
             "股东权益": ["equity", "净资产"],
-            "销售毛利率": ["gross_profit_margin", "毛利率"],
-            "毛利率": ["gross_profit_margin", "销售毛利率"],
+            "销售毛利率": ["gross_profit_margin", "gross_margin_ttm", "毛利率"],
+            "毛利率": ["gross_profit_margin", "gross_margin_ttm", "销售毛利率"],
             "销售净利率": ["net_profit_margin", "净利率"],
             "净利率": ["net_profit_margin", "销售净利率"],
             "资产负债率": ["debt_to_asset", "负债率"],
@@ -572,7 +748,7 @@ class FundSkill:
 
         core_keys = [
             _extract_value(financial_data, "roe", "净资产收益率"),
-            _extract_value(financial_data, "gross_profit_margin", "毛利率"),
+            _extract_value(financial_data, "gross_profit_margin", "gross_margin_ttm", "毛利率"),
             _extract_value(financial_data, "debt_to_asset", "资产负债率"),
         ]
         if all(v == 0 for v in core_keys):
@@ -584,6 +760,7 @@ class FundSkill:
                 cash_flow=CashFlowMetrics(0, 0, 0, 0, 0, "数据不可用", 0),
                 growth=GrowthMetrics(0, 0, 0, 0, 0, 0, False, "数据不可用", "数据不可用", 0),
                 operation=OperationalMetrics(0, 0, 0, 0, 0, "数据不可用", 0),
+                financial_health=FinancialHealthScores(0, "数据不足", [], 0, "数据不足", False),
                 overall_score=0,
                 investment_grade="数据不足-无法评级",
                 research_advice="财务数据缺失，建议通过Finnhub或Yahoo Finance补充数据",
@@ -595,8 +772,11 @@ class FundSkill:
         cash_flow = FundSkill.analyze_cash_flow(financial_data)
         growth = FundSkill.analyze_growth(financial_data)
         operation = FundSkill.analyze_operation(financial_data)
+        financial_health = FundSkill.calculate_piotroski_f_score(financial_data)
 
-        overall_score = int((profitability.score + balance_sheet.score + cash_flow.score + growth.score + operation.score) / 5)
+        # 综合评分: 5子系统 + F-Score映射(0-9 → 0-100)的加权平均
+        f_score_normalized = financial_health.piotroski_f / 9 * 100
+        overall_score = int((profitability.score + balance_sheet.score + cash_flow.score + growth.score + operation.score + f_score_normalized) / 6)
 
         if overall_score >= 80:
             grade = "A级-优质标的"
@@ -644,6 +824,7 @@ class FundSkill:
             cash_flow=cash_flow,
             growth=growth,
             operation=operation,
+            financial_health=financial_health,
             overall_score=overall_score,
             investment_grade=grade,
             research_advice=advice,

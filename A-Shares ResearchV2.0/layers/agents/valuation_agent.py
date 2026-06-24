@@ -10,7 +10,7 @@ from layers.connectors import DataConnector
 from layers.skills.valuation_skill import ValuationSkill, valuation_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
 
-REPORT_MAX_TOKENS = 1200
+REPORT_MAX_TOKENS = 1600
 LLM_TEMPERATURE = 0.0
 
 

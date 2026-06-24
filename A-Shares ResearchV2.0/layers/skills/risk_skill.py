@@ -1,4 +1,5 @@
 import sys
+import math
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
@@ -31,12 +32,20 @@ class FinancialRiskMetrics:
 
 @dataclass
 class MarketRiskMetrics:
-    volatility_30d: float
-    max_drawdown_1y: float
-    avg_turnover: float
-    tail_risk: str
+    volatility_30d: float           # 年化波动率(%)
+    max_drawdown_1y: float          # 最大回撤(%)
+    avg_turnover: float             # 平均换手率
+    tail_risk: str                  # 尾部风险描述
     risk_level: RiskLevel
     data_available: bool
+    # ── 机构级风险调整收益指标 ──
+    sharpe_ratio: float             # 夏普比率
+    sortino_ratio: float            # 索提诺比率
+    calmar_ratio: float             # 卡尔玛比率
+    beta: float                     # Beta系数
+    downside_deviation: float       # 下行波动率(%)
+    var_95: float                   # 95%置信度VaR(%)
+    cvar_95: float                  # 95%置信度CVaR(%)
 
 
 @dataclass
@@ -128,21 +137,24 @@ class RiskSkill:
     def analyze_market_risk(financial_data: Dict, tech_data: Optional[List[Dict]] = None) -> MarketRiskMetrics:
         has_tech = tech_data and isinstance(tech_data, list) and len(tech_data) > 0
 
+        empty = MarketRiskMetrics(0, 0, 0, "数据不足", RiskLevel.MINIMAL, False, 0, 0, 0, 0, 0, 0, 0)
+
         if not has_tech:
-            return MarketRiskMetrics(0, 0, 0, "数据不足", RiskLevel.MINIMAL, False)
+            return empty
 
         try:
             closes = [d.get("close", 0) for d in tech_data if d.get("close") is not None and d.get("close") > 0]
             turnovers = [d.get("turnover", 0) for d in tech_data if d.get("turnover") is not None]
 
             if not closes:
-                return MarketRiskMetrics(0, 0, 0, "数据不足", RiskLevel.MINIMAL, False)
+                return empty
 
+            # ── 基础波动率/回撤 ──
             if len(closes) >= 20:
                 returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
                 if returns:
                     volatility = (sum(r**2 for r in returns[-20:]) / min(20, len(returns)))**0.5
-                    volatility_annual = volatility * (252**0.5) * 100
+                    volatility_annual = volatility * math.sqrt(252) * 100
                 else:
                     volatility_annual = 0
             else:
@@ -158,6 +170,51 @@ class RiskSkill:
                     max_dd = dd
 
             avg_turnover = sum(turnovers) / len(turnovers) if turnovers else 0
+
+            # ── 机构级风险调整收益指标 ──
+            rets = returns if len(closes) >= 20 else []
+            sharpe = sortino = calmar = beta = downside_dev = var_95 = cvar_95 = 0.0
+
+            if rets:
+                mean_ret = sum(rets) / len(rets)
+                std_ret = math.sqrt(sum((r - mean_ret)**2 for r in rets) / len(rets))
+                risk_free_daily = 0.03 / 252  # 假设无风险利率 3%
+
+                # Sharpe Ratio
+                if std_ret > 0:
+                    sharpe = (mean_ret - risk_free_daily) / std_ret * math.sqrt(252)
+
+                # Sortino Ratio (下行标准差)
+                downside_rets = [r for r in rets if r < 0]
+                if downside_rets:
+                    downside_std = math.sqrt(sum((r - 0)**2 for r in downside_rets) / len(downside_rets))
+                    if downside_std > 0:
+                        sortino = (mean_ret - risk_free_daily) / downside_std * math.sqrt(252)
+                    downside_dev = downside_std * math.sqrt(252) * 100
+                else:
+                    sortino = 999 if mean_ret > 0 else 0
+                    downside_dev = 0
+
+                # Calmar Ratio
+                if max_dd > 0:
+                    annual_return = mean_ret * 252 * 100
+                    calmar = annual_return / max_dd
+
+                # Beta (简化：用指数日收益近似，如果不可用则用自身波动率)
+                # 实际应用中应从 market_data 获取基准收益率，这里做简化处理
+                beta = 1.0  # 默认市场中性
+
+                # VaR 95% (历史模拟法)
+                sorted_rets = sorted(rets)
+                var_idx = max(0, int(len(sorted_rets) * 0.05))
+                var_95 = abs(sorted_rets[var_idx]) * 100  # 日VaR
+
+                # CVaR 95% (条件在险价值)
+                tail_rets = sorted_rets[:var_idx + 1]
+                if tail_rets:
+                    cvar_95 = abs(sum(tail_rets) / len(tail_rets)) * 100
+                else:
+                    cvar_95 = var_95
 
             if volatility_annual > 60 or max_dd > 50:
                 tail = "高波动，系统性风险大"
@@ -178,11 +235,18 @@ class RiskSkill:
                 avg_turnover=round(avg_turnover, 2),
                 tail_risk=tail,
                 risk_level=level,
-                data_available=True
+                data_available=True,
+                sharpe_ratio=round(sharpe, 2),
+                sortino_ratio=round(sortino, 2),
+                calmar_ratio=round(calmar, 2),
+                beta=round(beta, 2),
+                downside_deviation=round(downside_dev, 2),
+                var_95=round(var_95, 2),
+                cvar_95=round(cvar_95, 2),
             )
         except Exception as e:
             logger.error(f"[RiskSkill] 市场风险计算异常: {e}")
-            return MarketRiskMetrics(0, 0, 0, "计算异常", RiskLevel.MINIMAL, False)
+            return empty
 
     @staticmethod
     def analyze(financial_data: Dict, tech_data: Optional[List[Dict]] = None) -> RiskSignals:

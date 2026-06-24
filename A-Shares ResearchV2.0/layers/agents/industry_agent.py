@@ -10,7 +10,7 @@ from layers.connectors import DataConnector
 from layers.skills.industry_skill import IndustrySkill, industry_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
 
-REPORT_MAX_TOKENS = 1200
+REPORT_MAX_TOKENS = 1600
 LLM_TEMPERATURE = 0.0
 
 
@@ -104,7 +104,7 @@ Step 4: 综合数据可得性和行业定位，得出行业层面投资结论
 
     @staticmethod
     def _build_data_context(stock_code: str, signals) -> str:
-        return f"""股票代码：{stock_code}
+        ctx = f"""股票代码：{stock_code}
 
 【行业基本信息】
 所属行业：{signals.industry_name}
@@ -112,11 +112,23 @@ Step 4: 综合数据可得性和行业定位，得出行业层面投资结论
 
 【数据可用性】
 已获取数据：{', '.join(signals.data_available_fields) if signals.data_available_fields else '无'}
-缺失数据：{', '.join(signals.data_unavailable_fields) if signals.data_unavailable_fields else '无'}
+缺失数据：{', '.join(signals.data_unavailable_fields) if signals.data_unavailable_fields else '无'}"""
 
+        if signals.peer_comparison:
+            pc = signals.peer_comparison
+            ctx += f"""
+【行业对标排名】({pc.peer_count}只可比公司)
+PE(TTM)：{pc.pe_ttm} | 行业排名：{pc.pe_rank}/{pc.peer_count} | 行业中位数：{pc.pe_median} | 低于{pc.pe_percentile}%的同行
+PB：{pc.pb} | 行业排名：{pc.pb_rank}/{pc.peer_count} | 行业中位数：{pc.pb_median}
+ROE：{pc.roe}% | 行业排名：{pc.roe_rank}/{pc.peer_count} | 行业中位数：{pc.roe_median}% | 超过{pc.roe_percentile}%的同行
+毛利率：{pc.gross_margin}% | 行业排名：{pc.margin_rank}/{pc.peer_count} | 行业中位数：{pc.margin_median}%
+营收增速：{pc.revenue_growth}% | 行业排名：{pc.growth_rank}/{pc.peer_count} | 行业中位数：{pc.growth_median}%"""
+
+        ctx += f"""
 【行业综合评分】
 评分：{signals.overall_score}/100
 评级：{signals.industry_grade}"""
+        return ctx
 
 
 def industry_agent_node(state: dict) -> dict:

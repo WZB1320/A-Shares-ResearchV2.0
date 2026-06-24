@@ -10,7 +10,7 @@ from layers.connectors import DataConnector
 from layers.skills.risk_skill import RiskSkill, risk_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
 
-REPORT_MAX_TOKENS = 1200
+REPORT_MAX_TOKENS = 1600
 LLM_TEMPERATURE = 0.0
 
 
@@ -131,6 +131,15 @@ Step 4: 综合各维度风险等级，加权计算整体风险评分
 尾部风险：{signals.market.tail_risk}
 市场风险等级：{signals.market.risk_level.value}
 数据可用：{'是' if signals.market.data_available else '否'}
+
+【风险调整收益指标】
+夏普比率：{signals.market.sharpe_ratio}
+索提诺比率：{signals.market.sortino_ratio}
+卡尔玛比率：{signals.market.calmar_ratio}
+Beta系数：{signals.market.beta}
+下行波动率：{signals.market.downside_deviation:.1f}%
+VaR(95%)：{signals.market.var_95:.2f}%（单日）
+CVaR(95%)：{signals.market.cvar_95:.2f}%（单日）
 
 【不可用风险维度】
 {unavailable_text}

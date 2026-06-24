@@ -188,7 +188,7 @@ class LocalAPIDataSource(DataSourceBase):
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
 
-        # 获取北向资金
+        # Fix #6: 北向资金 — 数据源可能失效(count=0)，标注"暂不可用"
         north_data = self._safe_fetch(
             f"{API_BASE_URL}/api/northbound/{stock_code}",
             params={"start_date": start_date, "end_date": end_date, "limit": CAPITAL_DATA_DAYS},
@@ -196,6 +196,8 @@ class LocalAPIDataSource(DataSourceBase):
         )
         if north_data and north_data.get("data"):
             capital_data["north"] = north_data["data"]
+        else:
+            capital_data["north_unavailable"] = True  # 标注数据源暂不可用
 
         # 获取融资融券数据
         margin_data = self._safe_fetch(
@@ -278,8 +280,16 @@ class LocalAPIDataSource(DataSourceBase):
             return pd.DataFrame()
 
         try:
-            # 获取日线数据
             end_date = datetime.now().strftime("%Y-%m-%d")
+
+            # Fix #2: 优先从 /api/indicators/technical/ 获取技术指标
+            tech_data = self._safe_fetch(
+                f"{API_BASE_URL}/api/indicators/technical/{stock_code}",
+                params={"start_date": TECH_DATA_START_DATE, "end_date": end_date},
+                error_msg=f"技术指标获取失败({stock_code})"
+            )
+
+            # 获取日线数据（OHLCV基础数据）
             daily_data = self._safe_fetch(
                 f"{API_BASE_URL}/api/daily/{stock_code}",
                 params={"start_date": TECH_DATA_START_DATE, "end_date": end_date},
@@ -308,46 +318,103 @@ class LocalAPIDataSource(DataSourceBase):
                 if col not in df.columns:
                     df[col] = 0.0
 
+            # Fix #2: 如果技术指标接口有数据，合并MA5/MA20等指标
+            if tech_data and tech_data.get("data"):
+                tech_df = pd.DataFrame(tech_data["data"])
+                # 重命名技术指标列
+                tech_col_map = {
+                    "trade_date": "date",
+                    "ma5": "ma5",
+                    "ma10": "ma10",
+                    "ma20": "ma20",
+                    "ma60": "ma60",
+                    "macd": "macd",
+                    "macd_signal": "signal",
+                    "macd_hist": "macd_hist",
+                    "rsi": "rsi6",
+                    "kdj_k": "k",
+                    "kdj_d": "d",
+                    "kdj_j": "j",
+                    "boll_upper": "boll_upper",
+                    "boll_mid": "boll_mid",
+                    "boll_lower": "boll_lower",
+                    "turnover_rate": "turnover",
+                }
+                tech_df.rename(columns=tech_col_map, inplace=True, errors="ignore")
+                # 按日期合并
+                if "date" in tech_df.columns:
+                    tech_df["date"] = tech_df["date"].astype(str)
+                    df["date"] = df["date"].astype(str)
+                    df = df.merge(tech_df[["date"] + [c for c in tech_df.columns if c != "date"]],
+                                  on="date", how="left", suffixes=("", "_tech"))
+                    # 用技术指标接口的数据覆盖本地计算
+                    for col in ["ma5", "ma10", "ma20", "ma60", "macd", "signal", "macd_hist",
+                                "rsi6", "k", "d", "j", "boll_upper", "boll_mid", "boll_lower", "turnover"]:
+                        if f"{col}_tech" in df.columns:
+                            df[col] = df[f"{col}_tech"].combine_first(df.get(col))
+                            df.drop(columns=[f"{col}_tech"], inplace=True, errors="ignore")
+
             # 计算涨跌幅
             if "pct_change" not in df.columns and "close" in df.columns:
                 df["pct_change"] = df["close"].pct_change() * 100
 
-            # 计算技术指标
+            # 本地计算技术指标（仅填充API未提供的字段）
             if "close" in df.columns:
-                df["ema12"] = df["close"].ewm(span=12, adjust=False).mean()
-                df["ema26"] = df["close"].ewm(span=26, adjust=False).mean()
-                df["macd"] = df["ema12"] - df["ema26"]
-                df["signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-                df["macd_hist"] = df["macd"] - df["signal"]
+                # MACD — 仅在API未提供时本地计算
+                if "macd" not in df.columns or df["macd"].isna().all():
+                    df["ema12"] = df["close"].ewm(span=12, adjust=False).mean()
+                    df["ema26"] = df["close"].ewm(span=26, adjust=False).mean()
+                    df["macd"] = df["ema12"] - df["ema26"]
+                    df["signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+                    df["macd_hist"] = df["macd"] - df["signal"]
 
-                delta = df["close"].diff()
-                gain = delta.where(delta > 0, 0)
-                loss = -delta.where(delta < 0, 0)
-                avg_gain6 = gain.ewm(span=6, adjust=False).mean()
-                avg_loss6 = loss.ewm(span=6, adjust=False).mean()
-                rs6 = avg_gain6 / avg_loss6
-                df["rsi6"] = 100 - (100 / (1 + rs6))
+                # RSI — 仅在API未提供时本地计算
+                if "rsi6" not in df.columns or df["rsi6"].isna().all():
+                    delta = df["close"].diff()
+                    gain = delta.where(delta > 0, 0)
+                    loss = -delta.where(delta < 0, 0)
+                    avg_gain6 = gain.ewm(span=6, adjust=False).mean()
+                    avg_loss6 = loss.ewm(span=6, adjust=False).mean()
+                    rs6 = avg_gain6 / avg_loss6
+                    df["rsi6"] = 100 - (100 / (1 + rs6))
 
-                if "low" in df.columns and "high" in df.columns:
-                    low_min = df["low"].rolling(window=9).min()
-                    high_max = df["high"].rolling(window=9).max()
-                    df["rsv"] = (df["close"] - low_min) / (high_max - low_min) * 100
-                    df["k"] = df["rsv"].ewm(span=3, adjust=False).mean()
-                    df["d"] = df["k"].ewm(span=3, adjust=False).mean()
-                    df["j"] = 3 * df["k"] - 2 * df["d"]
+                # KDJ — 仅在API未提供时本地计算
+                if "k" not in df.columns or df["k"].isna().all():
+                    if "low" in df.columns and "high" in df.columns:
+                        low_min = df["low"].rolling(window=9).min()
+                        high_max = df["high"].rolling(window=9).max()
+                        df["rsv"] = (df["close"] - low_min) / (high_max - low_min) * 100
+                        df["k"] = df["rsv"].ewm(span=3, adjust=False).mean()
+                        df["d"] = df["k"].ewm(span=3, adjust=False).mean()
+                        df["j"] = 3 * df["k"] - 2 * df["d"]
 
-                df["boll_mid"] = df["close"].rolling(window=20).mean()
-                df["boll_std"] = df["close"].rolling(window=20).std()
-                df["boll_upper"] = df["boll_mid"] + 2 * df["boll_std"]
-                df["boll_lower"] = df["boll_mid"] - 2 * df["boll_std"]
+                # BOLL — 仅在API未提供时本地计算
+                if "boll_mid" not in df.columns or df["boll_mid"].isna().all():
+                    df["boll_mid"] = df["close"].rolling(window=20).mean()
+                    df["boll_std"] = df["close"].rolling(window=20).std()
+                    df["boll_upper"] = df["boll_mid"] + 2 * df["boll_std"]
+                    df["boll_lower"] = df["boll_mid"] - 2 * df["boll_std"]
 
-                df["ma5"] = df["close"].rolling(window=5).mean()
-                df["ma10"] = df["close"].rolling(window=10).mean()
-                df["ma20"] = df["close"].rolling(window=20).mean()
-                df["ma60"] = df["close"].rolling(window=60).mean()
+                # MA — 仅在API未提供时本地计算
+                for window, col_name in [(5, "ma5"), (10, "ma10"), (20, "ma20"), (60, "ma60")]:
+                    if col_name not in df.columns or df[col_name].isna().all():
+                        df[col_name] = df["close"].rolling(window=window).mean()
 
-            if "turnover" not in df.columns:
-                df["turnover"] = 0.0
+            # Fix #7: 换手率 — API恒为null，从总股本自行计算
+            if "turnover" not in df.columns or df["turnover"].isna().all() or (df["turnover"] == 0).all():
+                cap_data = self._safe_fetch(
+                    f"{API_BASE_URL}/api/capital/{stock_code}",
+                    error_msg=f"总股本获取失败({stock_code})"
+                )
+                total_shares = None
+                if cap_data and cap_data.get("data"):
+                    cap_item = cap_data["data"][0] if isinstance(cap_data["data"], list) else cap_data["data"]
+                    total_shares = cap_item.get("total_shares") or cap_item.get("total_share")
+
+                if total_shares and total_shares > 0 and "volume" in df.columns:
+                    df["turnover"] = (df["volume"] / total_shares * 100).round(4)
+                else:
+                    df["turnover"] = 0.0
 
             return df
         except Exception as e:
@@ -357,9 +424,9 @@ class LocalAPIDataSource(DataSourceBase):
     def fetch_valuation_data(self, stock_code: str) -> Dict:
         """获取估值数据（PE/PB/历史分位）"""
         if not self.available:
-            return {"price": 0, "pe_ttm": 0, "pb": 0, "pe_history": [], "pb_history": [], "pe_10_avg": 0, "error": "本地API不可用"}
+            return {"price": None, "pe_ttm": None, "pb": None, "pe_history": [], "pb_history": [], "pe_10_avg": None, "error": "本地API不可用"}
 
-        valuation_data = {"price": 0, "pe_ttm": 0, "pb": 0, "pe_history": [], "pb_history": [], "pe_10_avg": 0, "error": None}
+        valuation_data = {"price": None, "pe_ttm": None, "pb": None, "pe_history": [], "pb_history": [], "pe_10_avg": None, "error": None}
 
         try:
             end_date = datetime.now().strftime("%Y-%m-%d")
@@ -374,9 +441,23 @@ class LocalAPIDataSource(DataSourceBase):
             if val_data and val_data.get("data"):
                 if len(val_data["data"]) > 0:
                     latest = val_data["data"][-1]
-                    valuation_data["pe_ttm"] = latest.get("pe_ttm", 0)
-                    valuation_data["pb"] = latest.get("pb", 0)
-                    valuation_data["price"] = latest.get("close", 0)
+                    pe_ttm = latest.get("pe_ttm")
+                    pb = latest.get("pb")
+                    # Fix #5: PE为负表示公司亏损，标注"PE不适用"而非传0
+                    valuation_data["pe_ttm"] = pe_ttm if pe_ttm is not None else None
+                    valuation_data["pb"] = pb if pb is not None else None
+                    # Fix #1: 股价从日线接口获取，估值接口可能不含close字段
+                    valuation_data["price"] = latest.get("close")
+                    if not valuation_data["price"]:
+                        # 估值接口无close，从日线接口获取最新收盘价
+                        daily = self._safe_fetch(
+                            f"{API_BASE_URL}/api/daily/{stock_code}",
+                            params={"start_date": (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"),
+                                    "end_date": end_date, "limit": 1},
+                            error_msg=f"最新股价获取失败({stock_code})"
+                        )
+                        if daily and daily.get("data") and len(daily["data"]) > 0:
+                            valuation_data["price"] = daily["data"][0].get("close")
 
                 # 收集历史数据
                 pe_list = []
@@ -403,9 +484,9 @@ class LocalAPIDataSource(DataSourceBase):
     def fetch_financial_data(self, stock_code: str) -> Dict:
         """获取财务数据"""
         if not self.available:
-            return {"roe": 0, "gross_profit": 0, "net_profit": "数据获取异常", "error": "本地API不可用"}
+            return {"roe": None, "gross_profit": None, "net_profit": None, "current_ratio": None, "quick_ratio": None, "error": "本地API不可用"}
 
-        financial_data = {"roe": 0, "gross_profit": 0, "net_profit": "数据获取异常", "error": None}
+        financial_data = {"roe": None, "gross_profit": None, "net_profit": None, "current_ratio": None, "quick_ratio": None, "error": None}
 
         try:
             end_date = datetime.now().strftime("%Y-%m-%d")
@@ -419,9 +500,14 @@ class LocalAPIDataSource(DataSourceBase):
 
             if fina_data and fina_data.get("data") and len(fina_data["data"]) > 0:
                 latest = fina_data["data"][-1]
-                financial_data["roe"] = latest.get("roe", 0)
-                financial_data["gross_profit"] = latest.get("grossprofit_margin", 0)
-                financial_data["net_profit"] = latest.get("profit_dedt_yoy", "数据获取异常")
+                financial_data["roe"] = latest.get("roe")
+                # Fix #4: 字段名带后缀，用 gross_margin_ttm 而非 grossprofit_margin
+                financial_data["gross_profit"] = latest.get("gross_margin_ttm") or latest.get("grossprofit_margin")
+                financial_data["net_profit"] = latest.get("profit_dedt_yoy")
+                # Fix #3: 流动比率/速动比率 API不提供，标注"未提供"
+                financial_data["current_ratio"] = None  # API不提供
+                financial_data["quick_ratio"] = None    # API不提供
+                financial_data["debt_to_asset"] = latest.get("debt_to_assets")
         except Exception as e:
             financial_data["error"] = str(e)
             logger.error(f"[LocalAPI] 财务数据获取失败: {str(e)[:100]}")
@@ -575,16 +661,19 @@ class DataConnector:
 
     @staticmethod
     def _is_financial_data_empty(data: Dict) -> bool:
-        """判断财务数据是否实质上为空（core_keys 全为 0）"""
+        """判断财务数据是否实质上为空（core_keys 全为 None）"""
         if not data:
             return True
         core_keys = [
-            data.get("roe", 0), data.get("净资产收益率", 0),
-            data.get("gross_profit", 0), data.get("gross_profit_margin", 0),
-            data.get("毛利率", 0), data.get("net_profit", 0),
-            data.get("net_profit_margin", 0),
+            data.get("roe"),
+            data.get("净资产收益率"),
+            data.get("gross_profit"),
+            data.get("gross_profit_margin"),
+            data.get("毛利率"),
+            data.get("net_profit"),
+            data.get("net_profit_margin"),
         ]
-        return all(v == 0 or v is None or v == "数据获取异常"
+        return all(v is None or v == 0 or v == "数据获取异常"
                    for v in core_keys)
 
     @staticmethod
