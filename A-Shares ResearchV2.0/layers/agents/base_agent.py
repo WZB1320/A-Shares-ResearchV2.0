@@ -20,6 +20,17 @@ from layers.agents.report_schema import parse_json_report, error_report, unavail
 logger = logging.getLogger("BaseAnalysisAgent")
 
 
+# 量化锚定强制规则 —— 所有分析 Agent 的 prompt 通用规则
+# 目的：消除"极低/极高/大幅"等模糊描述，强制所有判断附带具体数字
+QUANT_ANCHOR_RULE = """
+**量化锚定强制规则**：
+- 所有判断必须附带具体数字，禁止使用"极低/极高/很大/很小/大幅/显著"等模糊描述
+- ✅ 正确示例："换手率0.3%低于历史80%分位"、"融资余额下降9.85%"、"ROE为-4.62%"
+- ❌ 错误示例："换手率极低"、"融资余额大幅下降"、"ROE较差"
+- key_signals 和 risk_factors 中的每一项必须包含至少1个具体数字（百分比/倍数/元/亿元等）
+- 数字来源限于提供的数据上下文，不得编造未提供的数据"""
+
+
 class BaseAnalysisAgent(ABC):
     """所有分析 Agent 的抽象基类"""
 

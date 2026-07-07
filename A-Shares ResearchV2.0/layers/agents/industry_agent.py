@@ -9,6 +9,7 @@ from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.industry_skill import IndustrySkill, industry_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
+from layers.agents.base_agent import QUANT_ANCHOR_RULE
 
 REPORT_MAX_TOKENS = 1600
 LLM_TEMPERATURE = 0.0
@@ -81,7 +82,9 @@ Step 4: 综合数据可得性和行业定位，得出行业层面投资结论
 5. key_signals 列出2-3个行业关键信号
 6. risk_factors 列出2-3个行业风险
 7. 仅基于提供的数据做判断，不编造数据，不要推测未提供数据的行业信息
-8. 只输出JSON，不要输出任何其他内容"""
+8. 只输出JSON，不要输出任何其他内容
+9. **重要**：负值（如ROE为负、PE为负）是有效数据点，表示公司亏损，不是"数据缺失"。只有当数据覆盖列表中明确标注为缺失的字段，才能在risk_factors中提及"数据缺失"。data_coverage中的available和missing必须与上方"数据可用性"部分一致。
+{QUANT_ANCHOR_RULE}"""
 
         try:
             completion = self.client.chat.completions.create(
@@ -112,7 +115,12 @@ Step 4: 综合数据可得性和行业定位，得出行业层面投资结论
 
 【数据可用性】
 已获取数据：{', '.join(signals.data_available_fields) if signals.data_available_fields else '无'}
-缺失数据：{', '.join(signals.data_unavailable_fields) if signals.data_unavailable_fields else '无'}"""
+缺失数据：{', '.join(signals.data_unavailable_fields) if signals.data_unavailable_fields else '无'}
+
+【个股财务摘要】
+ROE：{signals.stock_roe}%
+毛利率：{signals.stock_gross_margin}%
+营收增速：{signals.stock_revenue_growth}%"""
 
         if signals.peer_comparison:
             pc = signals.peer_comparison

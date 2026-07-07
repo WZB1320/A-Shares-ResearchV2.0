@@ -9,6 +9,7 @@ from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.capital_skill import CapitalSkill, capital_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
+from layers.agents.base_agent import QUANT_ANCHOR_RULE
 
 REPORT_MAX_TOKENS = 1200
 LLM_TEMPERATURE = 0.0
@@ -84,7 +85,8 @@ Step 5: 综合以上四步骤，给出资金面综合研判
 5. key_signals 列出3-5个关键资金信号
 6. risk_factors 列出2-3个资金面风险
 7. 仅基于提供的数据做判断，不编造数据
-8. 只输出JSON，不要输出任何其他内容"""
+8. 只输出JSON，不要输出任何其他内容
+{QUANT_ANCHOR_RULE}"""
 
         try:
             completion = self.client.chat.completions.create(
@@ -115,6 +117,7 @@ Step 5: 综合以上四步骤，给出资金面综合研判
 30日趋势：{signals.north.trend_30d}
 净流入：{signals.north.net_inflow}
 信号：{signals.north.signal}
+{'⚠️ 因监管政策自2024-08-16起停止披露北向个股日度持股明细，数据不可用' if signals.north.trend_5d and '停止' in str(signals.north.trend_5d) else ''}
 
 【主力资金】
 5日趋势：{signals.main.trend_5d}

@@ -9,6 +9,7 @@ from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.valuation_skill import ValuationSkill, valuation_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
+from layers.agents.base_agent import QUANT_ANCHOR_RULE
 
 REPORT_MAX_TOKENS = 1600
 LLM_TEMPERATURE = 0.0
@@ -53,7 +54,7 @@ class ValuationAgent:
 
 {quality_context or ''}
 
-{self._build_data_context(stock_code, signals)}
+{self._build_data_context(stock_code, signals, fundamental_data)}
 
 请严格按以下JSON格式输出（不要包含任何其他文字，只输出JSON）：
 {{
@@ -94,7 +95,11 @@ Step 4: 综合PE和PB的判断，结合行业特性，给出最终估值评分
 8. pe_pb_score中industry_adjusted为true说明用了行业自适应分位阈值
 9. pe_score/pb_score对比分位数与行业阈值(低估/高估)做判定，非绝对值判断
 10. DCF估值因缺少数据不进行，不凭空估算
-11. 只输出JSON，不要输出任何其他内容"""
+11. 只输出JSON，不要输出任何其他内容
+12. **重要**：负值（如PE为负、PB极低）是有效数据点，表示公司亏损或市场极度悲观，不是"数据缺失"。只有当数据明确标注为"不可用"或"None"时，才能提及"数据缺失"。
+13. **PE Bands 定价**：如果提供了PE Bands三线，必须基于当前股价相对Bands位置判断估值水平——跌破下轨=极度低估，位于下轨-中轨=偏低，位于中轨-上轨=合理，远超上轨=严重高估。thesis中必须明确指出"当前股价位于PE Bands的XX位置"。
+14. **涨幅归因**：如果提供了PE贡献和EPS贡献，必须在thesis中明确说明"涨的是PE还是EPS"，这是判断估值可持续性的核心——PE扩张驱动的涨幅不可持续，EPS增长驱动的涨幅才健康。
+{QUANT_ANCHOR_RULE}"""
 
         try:
             completion = self.client.chat.completions.create(
@@ -116,8 +121,68 @@ Step 4: 综合PE和PB的判断，结合行业特性，给出最终估值评分
             return error_report("valuation", error_msg).to_dict()
 
     @staticmethod
-    def _build_data_context(stock_code: str, signals) -> str:
+    def _build_data_context(stock_code: str, signals, fundamental_data=None) -> str:
         industry_label = ValuationSkill.CATEGORY_NAMES.get(signals.metrics.industry_category, "通用")
+
+        # 提取基本面摘要
+        fund_summary = ""
+        if fundamental_data and isinstance(fundamental_data, dict):
+            valuation = fundamental_data.get("valuation", {})
+            finance_list = fundamental_data.get("finance", [])
+            roe = valuation.get("净资产收益率", 0)
+            gross_margin = 0
+            if finance_list and isinstance(finance_list[-1], dict):
+                gross_margin = finance_list[-1].get("gross_margin_ttm", 0)
+            fund_summary = f"""
+【基本面摘要】
+ROE：{roe}%
+毛利率：{gross_margin}%
+"""
+
+        # PE Bands 三线定价
+        pe_bands_section = ""
+        m = signals.metrics
+        if m.pe_band_mid is not None and m.price is not None and m.pe_ttm is not None and m.pe_ttm > 0:
+            # 判断当前股价位置
+            if m.price > m.pe_band_upper_price:
+                pos = f"远超上轨（高估，距上轨+{(m.price/m.pe_band_upper_price-1)*100:.1f}%）"
+            elif m.price > m.pe_band_mid_price:
+                pos = f"位于中轨-上轨（合理偏高）"
+            elif m.price > m.pe_band_lower_price:
+                pos = f"位于下轨-中轨（合理偏低）"
+            else:
+                pos = f"跌破下轨（低估，距下轨{(m.price/m.pe_band_lower_price-1)*100:.1f}%）"
+            pe_bands_section = f"""
+【PE Bands 三线定价】
+下轨(25%分位): {m.pe_band_lower:.1f}x → {m.pe_band_lower_price:.2f}元
+中轨(50%分位): {m.pe_band_mid:.1f}x → {m.pe_band_mid_price:.2f}元
+上轨(75%分位): {m.pe_band_upper:.1f}x → {m.pe_band_upper_price:.2f}元
+当前股价: {m.price:.2f}元 (PE={m.pe_ttm:.1f}x)
+位置判断: {pos}
+"""
+
+        # PB Bands 三线定价
+        pb_bands_section = ""
+        if m.pb_band_mid is not None and m.price is not None and m.pb is not None and m.pb > 0:
+            pb_bands_section = f"""
+【PB Bands 三线定价】
+下轨(25%分位): {m.pb_band_lower:.2f}x → {m.pb_band_lower_price:.2f}元
+中轨(50%分位): {m.pb_band_mid:.2f}x → {m.pb_band_mid_price:.2f}元
+上轨(75%分位): {m.pb_band_upper:.2f}x → {m.pb_band_upper_price:.2f}元
+当前PB: {m.pb:.2f}x
+"""
+
+        # 涨幅归因（PE vs EPS）
+        attribution_section = ""
+        if m.attribution_note:
+            attribution_section = f"""
+【涨幅归因（1年）】
+总涨幅: {m.price_return_1y:+.1f}%
+PE贡献: {m.pe_return_1y:+.1f}%
+EPS贡献: {m.eps_return_1y:+.1f}%
+归因结论: {m.attribution_note}
+"""
+
         return f"""股票代码：{stock_code}
 
 【估值指标】
@@ -127,7 +192,7 @@ PB：{signals.metrics.pb if signals.metrics.pb is not None else 'N/A'}
 PE历史分位数：{signals.metrics.pe_percentile if signals.metrics.pe_percentile is not None else 'N/A'}%
 PB历史分位数：{signals.metrics.pb_percentile if signals.metrics.pb_percentile is not None else 'N/A'}%
 PE十年均值：{signals.metrics.pe_10_avg if signals.metrics.pe_10_avg is not None else 'N/A'}
-
+{fund_summary}{pe_bands_section}{pb_bands_section}{attribution_section}
 【行业对标信息】
 行业类别：{industry_label}
 PE低估阈值(分位)：<{signals.metrics.percentile_pe_low_threshold:.0f}%

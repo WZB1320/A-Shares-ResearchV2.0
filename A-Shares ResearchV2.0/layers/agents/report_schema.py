@@ -261,6 +261,25 @@ def aggregate_reports(reports: Dict[str, AgentReport]) -> Dict[str, Any]:
     for r in valid_reports.values():
         report_counts[r.grade] = report_counts.get(r.grade, 0) + 1
 
+    # 投票分布：偏多/中性/偏空 三档票数 + 对应维度名
+    bullish_grades = ("强烈看多", "看多", "中性偏多")
+    bearish_grades = ("中性偏空", "看空", "强烈看空")
+    dim_names_map = {"tech": "技术面", "fund": "基本面", "capital": "资金面",
+                     "industry": "行业面", "risk": "风险面", "valuation": "估值面"}
+    vote_distribution = {"偏多": 0, "中性": 0, "偏空": 0}
+    vote_dims = {"偏多": [], "中性": [], "偏空": []}
+    for dim_key, r in valid_reports.items():
+        dim_label = dim_names_map.get(dim_key, dim_key)
+        if r.grade in bullish_grades:
+            vote_distribution["偏多"] += 1
+            vote_dims["偏多"].append(dim_label)
+        elif r.grade in bearish_grades:
+            vote_distribution["偏空"] += 1
+            vote_dims["偏空"].append(dim_label)
+        else:
+            vote_distribution["中性"] += 1
+            vote_dims["中性"].append(dim_label)
+
     return {
         "overall_score": overall_score,
         "overall_grade": overall_grade,
@@ -273,6 +292,8 @@ def aggregate_reports(reports: Dict[str, AgentReport]) -> Dict[str, Any]:
         "all_risks": all_risks[:10],
         "conflicts": conflicts,
         "invalid_dimensions": {k: v.thesis for k, v in invalid_reports.items()},
+        "vote_distribution": vote_distribution,
+        "vote_dims": vote_dims,
     }
 
 

@@ -9,6 +9,7 @@ from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.risk_skill import RiskSkill, risk_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
+from layers.agents.base_agent import QUANT_ANCHOR_RULE
 
 REPORT_MAX_TOKENS = 1600
 LLM_TEMPERATURE = 0.0
@@ -87,7 +88,9 @@ Step 4: 综合各维度风险等级，加权计算整体风险评分
 6. risk_factors 列出3-5个具体风险因素
 7. 仅基于提供的数据做判断，不编造数据
 8. 对标记为"不可用"的维度不进行推测
-9. 只输出JSON，不要输出任何其他内容"""
+9. 只输出JSON，不要输出任何其他内容
+10. **重要**：负值（如ROE为负、PE为负）是有效数据点，表示公司亏损，不是"数据缺失"。只有当数据明确标注为"不可用"或"数据可用：否"时，才能在risk_factors中提及"数据缺失"。
+{QUANT_ANCHOR_RULE}"""
 
         try:
             completion = self.client.chat.completions.create(
@@ -117,6 +120,9 @@ Step 4: 综合各维度风险等级，加权计算整体风险评分
 资产负债率：{signals.financial.debt_to_asset}%
 流动比率：{signals.financial.current_ratio}
 速动比率：{signals.financial.quick_ratio}
+ROE：{signals.financial.roe}%
+毛利率：{signals.financial.gross_margin}%
+净利润同比：{signals.financial.net_profit_yoy}%
 利息保障倍数：{signals.financial.interest_coverage}
 现金流与利润背离：{'是' if signals.financial.cash_flow_shortfall else '否'}
 连续亏损年数：{signals.financial.consecutive_losses}

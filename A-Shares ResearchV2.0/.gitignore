@@ -11,3 +11,5 @@ checkpoints/
 logs/
 .trae/
 tests
+report
+reference_reports

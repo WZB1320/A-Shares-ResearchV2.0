@@ -365,16 +365,16 @@
 
     <!-- ====== 右侧：对话面板 ====== -->
     <aside class="chat-panel" id="chatPanel">
-        <div class="chat-header">💬 分析追问</div>
+        <div class="chat-header">💬 投研助手</div>
         <div class="chat-messages" id="chatMessages">
             <div class="chat-empty" id="chatEmpty">
-                分析股票后即可追问<br>例如："当前估值合理吗？"<br>"主要风险是什么？"
+                直接提问，无需先分析<br>例如："600519现在多少钱？"<br>"什么是Piotroski F-Score？"<br>"茅台PE是多少？"
             </div>
         </div>
         <div class="chat-input-area">
             <form id="chatForm" onsubmit="sendMessage(event)">
-                <input type="text" id="chatInput" placeholder="基于分析结果追问..." disabled>
-                <button type="submit" id="chatSendBtn" disabled>发送</button>
+                <input type="text" id="chatInput" placeholder="输入股票代码或问题..." autocomplete="off">
+                <button type="submit" id="chatSendBtn">发送</button>
             </form>
         </div>
     </aside>
@@ -776,9 +776,8 @@ function enableChat(stockCode) {
     currentStock = stockCode;
     chatMessages = [];
     document.getElementById('chatMessages').innerHTML =
-        '<div class="chat-empty">基于 ' + stockCode + ' 的分析结果，可以追问了</div>';
-    document.getElementById('chatInput').disabled = false;
-    document.getElementById('chatSendBtn').disabled = false;
+        '<div class="chat-empty">基于 ' + stockCode + ' 的分析结果追问，或直接提问其他股票/问题</div>';
+    document.getElementById('chatInput').placeholder = '基于 ' + stockCode + ' 报告追问，或输入其他问题...';
     document.getElementById('chatEmpty') && document.getElementById('chatEmpty').remove();
 }
 
@@ -787,7 +786,7 @@ async function sendMessage(e) {
     const input = document.getElementById('chatInput');
     const btn = document.getElementById('chatSendBtn');
     const msg = input.value.trim();
-    if (!msg || !currentStock) return;
+    if (!msg) return;  // 不再要求 currentStock，允许无分析直接提问
 
     input.value = '';
     input.disabled = true;
@@ -801,7 +800,7 @@ async function sendMessage(e) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                stock_code: currentStock,
+                stock_code: currentStock || '',  // 可为空，后端自动从问题提取
                 messages: chatMessages.slice(0, -1),
                 new_message: msg
             })

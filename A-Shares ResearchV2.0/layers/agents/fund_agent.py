@@ -8,7 +8,7 @@ logger = logging.getLogger("FundAgent")
 from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.fund_skill import FundSkill, fund_skill
-from layers.agents.base_agent import BaseAnalysisAgent
+from layers.agents.base_agent import BaseAnalysisAgent, QUANT_ANCHOR_RULE
 
 MAX_TOKENS = 2000
 
@@ -76,7 +76,8 @@ Step 5: 综合以上四步骤，加权得出综合评分和投资评级
 5. key_signals 列出3-5个关键基本面信号
 6. risk_factors 列出2-3个关键财务风险
 7. 仅基于提供的数据做判断，不编造数据
-8. 只输出JSON，不要输出任何其他内容"""
+8. 只输出JSON，不要输出任何其他内容
+{QUANT_ANCHOR_RULE}"""
 
     @staticmethod
     def _build_data_context(stock_code: str, signals) -> str:

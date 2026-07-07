@@ -9,6 +9,7 @@ from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.tech_skill import TechSkill, tech_skill
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report, AgentReport
+from layers.agents.base_agent import QUANT_ANCHOR_RULE
 
 REPORT_MAX_TOKENS = 1200
 LLM_TEMPERATURE = 0.0
@@ -82,7 +83,8 @@ Step 4: 综合以上三步骤，计算整体强度，得出最终结论
 5. key_signals 列出3-5个关键技术信号
 6. risk_factors 列出2-3个关键技术风险
 7. 仅基于提供的数据做判断，不编造数据
-8. 只输出JSON，不要输出任何其他内容"""
+8. 只输出JSON，不要输出任何其他内容
+{QUANT_ANCHOR_RULE}"""
 
         try:
             completion = self.client.chat.completions.create(

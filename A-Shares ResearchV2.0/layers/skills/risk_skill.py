@@ -28,6 +28,10 @@ class FinancialRiskMetrics:
     audit_opinion: str
     risk_level: RiskLevel
     data_available: bool
+    # 盈利能力指标（用于风险评估）
+    roe: float = 0.0
+    gross_margin: float = 0.0
+    net_profit_yoy: float = 0.0
 
 
 @dataclass
@@ -93,6 +97,10 @@ class RiskSkill:
         interest_coverage = RiskSkill._extract_financial_field(financial_data, "interest_coverage")
         ocf = RiskSkill._extract_financial_field(financial_data, "operating_cash_flow")
         net_profit = RiskSkill._extract_financial_field(financial_data, "net_profit")
+        # 盈利能力指标
+        roe = RiskSkill._extract_financial_field(financial_data, "roe")
+        gross_margin = RiskSkill._extract_financial_field(financial_data, "gross_profit") or RiskSkill._extract_financial_field(financial_data, "gross_margin_ttm")
+        net_profit_yoy = RiskSkill._extract_financial_field(financial_data, "net_profit")
         consecutive_losses = financial_data.get("consecutive_losses", 0)
         audit_opinion = financial_data.get("audit_opinion", "未知")
 
@@ -130,7 +138,10 @@ class RiskSkill:
             consecutive_losses=consecutive_losses,
             audit_opinion=audit_opinion if audit_opinion else "未知",
             risk_level=level,
-            data_available=True
+            data_available=True,
+            roe=round(roe, 2) if roe is not None else 0.0,
+            gross_margin=round(gross_margin, 2) if gross_margin is not None else 0.0,
+            net_profit_yoy=round(net_profit_yoy, 2) if net_profit_yoy is not None else 0.0,
         )
 
     @staticmethod

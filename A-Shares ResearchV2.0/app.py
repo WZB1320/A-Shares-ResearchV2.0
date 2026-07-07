@@ -246,19 +246,17 @@ def api_analyze(req: AnalyzeRequest):
         return JSONResponse({"success": False, "error": str(e)})
 
 
-# ==================== 对话 API（仅上下文对话） ====================
+# ==================== 对话 API（多模式） ====================
 
 class ChatRequest(BaseModel):
-    stock_code: str
+    stock_code: str = ""  # 可选：为空时自动从问题中提取
     messages: List[dict] = []
     new_message: str
 
 
 @app.post("/api/chat")
 def api_chat(req: ChatRequest):
-    """基于分析上下文的追问 - 必须在分析股票后使用"""
-    if not req.stock_code:
-        return JSONResponse({"error": "缺少股票代码"}, status_code=400)
+    """多模式对话 - 支持基于报告追问 / 实时数据问答 / 纯知识问答"""
     if not req.new_message:
         return JSONResponse({"error": "缺少消息内容"}, status_code=400)
 

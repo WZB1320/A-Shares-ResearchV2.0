@@ -188,7 +188,8 @@ class LocalAPIDataSource(DataSourceBase):
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
 
-        # Fix #6: 北向资金 — 数据源可能失效(count=0)，标注"暂不可用"
+        # 北向资金 — 因监管政策自2024-08-16起停止披露个股日度持股明细
+        # 非沪深港通标的也无此数据
         north_data = self._safe_fetch(
             f"{API_BASE_URL}/api/northbound/{stock_code}",
             params={"start_date": start_date, "end_date": end_date, "limit": CAPITAL_DATA_DAYS},
@@ -197,7 +198,8 @@ class LocalAPIDataSource(DataSourceBase):
         if north_data and north_data.get("data"):
             capital_data["north"] = north_data["data"]
         else:
-            capital_data["north_unavailable"] = True  # 标注数据源暂不可用
+            capital_data["north_unavailable"] = True  # 因监管政策自2024-08-16停止更新
+            capital_data["north_unavailable_reason"] = "因监管政策自2024-08-16停止披露北向个股日度持股明细"
 
         # 获取融资融券数据
         margin_data = self._safe_fetch(
@@ -253,8 +255,8 @@ class LocalAPIDataSource(DataSourceBase):
                 fundamental_data["valuation"] = {
                     "市盈率": latest.get("pe_ttm"),
                     "市净率": latest.get("pb"),
-                    "股息率": latest.get("ps"),
-                    "净资产收益率": latest.get("roe"),
+                    "股息率": latest.get("dividend_yield"),
+                    "净资产收益率": latest.get("roe_ttm") or latest.get("roe"),
                     "总市值": latest.get("total_mv")
                 }
 
@@ -321,24 +323,23 @@ class LocalAPIDataSource(DataSourceBase):
             # Fix #2: 如果技术指标接口有数据，合并MA5/MA20等指标
             if tech_data and tech_data.get("data"):
                 tech_df = pd.DataFrame(tech_data["data"])
-                # 重命名技术指标列
+                # 重命名技术指标列（映射 API 字段名 → 内部标准名）
                 tech_col_map = {
                     "trade_date": "date",
                     "ma5": "ma5",
                     "ma10": "ma10",
                     "ma20": "ma20",
                     "ma60": "ma60",
-                    "macd": "macd",
-                    "macd_signal": "signal",
+                    "macd_dif": "macd",        # API: macd_dif → 内部: macd
+                    "macd_dea": "signal",       # API: macd_dea → 内部: signal
                     "macd_hist": "macd_hist",
-                    "rsi": "rsi6",
+                    "rsi6": "rsi6",             # API: rsi6（不是 rsi）
                     "kdj_k": "k",
                     "kdj_d": "d",
                     "kdj_j": "j",
                     "boll_upper": "boll_upper",
                     "boll_mid": "boll_mid",
                     "boll_lower": "boll_lower",
-                    "turnover_rate": "turnover",
                 }
                 tech_df.rename(columns=tech_col_map, inplace=True, errors="ignore")
                 # 按日期合并
@@ -349,7 +350,7 @@ class LocalAPIDataSource(DataSourceBase):
                                   on="date", how="left", suffixes=("", "_tech"))
                     # 用技术指标接口的数据覆盖本地计算
                     for col in ["ma5", "ma10", "ma20", "ma60", "macd", "signal", "macd_hist",
-                                "rsi6", "k", "d", "j", "boll_upper", "boll_mid", "boll_lower", "turnover"]:
+                                "rsi6", "k", "d", "j", "boll_upper", "boll_mid", "boll_lower"]:
                         if f"{col}_tech" in df.columns:
                             df[col] = df[f"{col}_tech"].combine_first(df.get(col))
                             df.drop(columns=[f"{col}_tech"], inplace=True, errors="ignore")
@@ -500,14 +501,20 @@ class LocalAPIDataSource(DataSourceBase):
 
             if fina_data and fina_data.get("data") and len(fina_data["data"]) > 0:
                 latest = fina_data["data"][-1]
-                financial_data["roe"] = latest.get("roe")
-                # Fix #4: 字段名带后缀，用 gross_margin_ttm 而非 grossprofit_margin
+                # ROE: API 返回 roe_ttm，不是 roe
+                financial_data["roe"] = latest.get("roe_ttm") or latest.get("roe")
+                # 毛利率: API 返回 gross_margin_ttm
                 financial_data["gross_profit"] = latest.get("gross_margin_ttm") or latest.get("grossprofit_margin")
-                financial_data["net_profit"] = latest.get("profit_dedt_yoy")
-                # Fix #3: 流动比率/速动比率 API不提供，标注"未提供"
-                financial_data["current_ratio"] = None  # API不提供
-                financial_data["quick_ratio"] = None    # API不提供
-                financial_data["debt_to_asset"] = latest.get("debt_to_assets")
+                # 净利润同比: API 返回 net_profit_yoy_ttm，不是 profit_dedt_yoy
+                financial_data["net_profit"] = latest.get("net_profit_yoy_ttm") or latest.get("profit_dedt_yoy")
+                # 流动比率/速动比率: API 实际提供（financial接口），从financial取
+                financial_data["current_ratio"] = latest.get("current_ratio")
+                financial_data["quick_ratio"] = latest.get("quick_ratio")
+                # 资产负债率: API 无 debt_to_assets 字段，从 equity/total_assets 反算
+                if latest.get("total_assets") and latest.get("equity"):
+                    financial_data["debt_to_asset"] = round(1 - latest["equity"] / latest["total_assets"], 4)
+                else:
+                    financial_data["debt_to_asset"] = None
         except Exception as e:
             financial_data["error"] = str(e)
             logger.error(f"[LocalAPI] 财务数据获取失败: {str(e)[:100]}")

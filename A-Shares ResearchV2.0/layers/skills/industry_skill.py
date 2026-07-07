@@ -58,6 +58,10 @@ class IndustrySignals:
     industry_grade: str
     research_advice: str
     risk_warnings: List[str]
+    # 个股财务摘要（即使无行业对标也能展示）
+    stock_roe: float = 0.0
+    stock_gross_margin: float = 0.0
+    stock_revenue_growth: float = 0.0
 
 
 class IndustrySkill:
@@ -89,8 +93,25 @@ class IndustrySkill:
         finance = fundamental_data.get("finance", [])
         if finance:
             available.append(f"财务数据({len(finance)}期)")
+            # 检查最新期财务数据中的关键字段
+            latest = finance[-1] if isinstance(finance[-1], dict) else {}
+            for field, label in [("roe_ttm", "ROE"), ("gross_margin_ttm", "毛利率"), ("current_ratio", "流动比率"), ("revenue_yoy_ttm", "营收增速")]:
+                if latest.get(field) is not None:
+                    available.append(label)
+                else:
+                    unavailable.append(label)
         else:
             unavailable.append("财务数据")
+            unavailable.extend(["ROE", "毛利率", "流动比率", "营收增速"])
+
+        # 检查估值数据
+        valuation = fundamental_data.get("valuation", {})
+        if valuation:
+            for field, label in [("市盈率", "PE"), ("市净率", "PB"), ("净资产收益率", "估值ROE")]:
+                if valuation.get(field) is not None:
+                    available.append(label)
+                else:
+                    unavailable.append(label)
 
         return available, unavailable
 
@@ -112,9 +133,30 @@ class IndustrySkill:
         valuation = stock_financials.get("valuation", {})
         stock_pe = IndustrySkill._safe_float(valuation.get("pe_ttm", stock_financials.get("pe_ttm", 0)))
         stock_pb = IndustrySkill._safe_float(valuation.get("pb", stock_financials.get("pb", 0)))
-        stock_roe = IndustrySkill._safe_float(stock_financials.get("roe", stock_financials.get("净资产收益率", 0)))
+        
+        # ROE: 优先从 valuation 取，其次从 finance 最新期取 roe_ttm
+        stock_roe = IndustrySkill._safe_float(valuation.get("净资产收益率", stock_financials.get("roe", 0)))
+        if stock_roe == 0:
+            finance_list = stock_financials.get("finance", [])
+            if finance_list and isinstance(finance_list, list) and len(finance_list) > 0:
+                latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+                stock_roe = IndustrySkill._safe_float(latest_fin.get("roe_ttm", latest_fin.get("roe", 0)))
+        
+        # 毛利率: 优先从 finance 最新期取 gross_margin_ttm
         stock_margin = IndustrySkill._safe_float(stock_financials.get("gross_profit_margin", stock_financials.get("gross_margin_ttm", stock_financials.get("毛利率", 0))))
+        if stock_margin == 0:
+            finance_list = stock_financials.get("finance", [])
+            if finance_list and isinstance(finance_list, list) and len(finance_list) > 0:
+                latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+                stock_margin = IndustrySkill._safe_float(latest_fin.get("gross_margin_ttm", latest_fin.get("grossprofit_margin", 0)))
+        
+        # 营收增速: 从 finance 最新期取 revenue_yoy_ttm
         stock_growth = IndustrySkill._safe_float(stock_financials.get("revenue_growth", stock_financials.get("营收增速", 0)))
+        if stock_growth == 0:
+            finance_list = stock_financials.get("finance", [])
+            if finance_list and isinstance(finance_list, list) and len(finance_list) > 0:
+                latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+                stock_growth = IndustrySkill._safe_float(latest_fin.get("revenue_yoy_ttm", latest_fin.get("revenue_yoy_qoq", 0)))
         
         # 收集同行业数据
         peer_pe = []; peer_pb = []; peer_roe = []; peer_margin = []; peer_growth = []
@@ -209,6 +251,21 @@ class IndustrySkill:
         available, unavailable = IndustrySkill._check_data_availability(fundamental_data)
         has_data = len(available) > 0
 
+        # ── 提取个股财务摘要 ──
+        stock_roe = 0.0
+        stock_gross_margin = 0.0
+        stock_revenue_growth = 0.0
+        valuation = fundamental_data.get("valuation", {})
+        finance_list = fundamental_data.get("finance", [])
+        stock_roe = IndustrySkill._safe_float(valuation.get("净资产收益率", 0))
+        if stock_roe == 0 and finance_list:
+            latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+            stock_roe = IndustrySkill._safe_float(latest_fin.get("roe_ttm", 0))
+        if finance_list:
+            latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+            stock_gross_margin = IndustrySkill._safe_float(latest_fin.get("gross_margin_ttm", 0))
+            stock_revenue_growth = IndustrySkill._safe_float(latest_fin.get("revenue_yoy_ttm", 0))
+
         # ── 行业对标分析 ──
         peer_comparison = IndustrySkill.analyze_peer_comparison(fundamental_data, fundamental_data)
 
@@ -289,7 +346,10 @@ class IndustrySkill:
             overall_score=score,
             industry_grade=grade,
             research_advice=advice,
-            risk_warnings=warnings
+            risk_warnings=warnings,
+            stock_roe=round(stock_roe, 2),
+            stock_gross_margin=round(stock_gross_margin, 2),
+            stock_revenue_growth=round(stock_revenue_growth, 2),
         )
 
 

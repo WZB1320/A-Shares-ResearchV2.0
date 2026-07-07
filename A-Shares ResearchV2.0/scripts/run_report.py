@@ -3,7 +3,10 @@ import sys
 import json
 import logging
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
+
+# 项目根目录（脚本位于 scripts/，根目录在上一级）
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(asctime)s - %(message)s")
 
@@ -42,8 +45,11 @@ output.append("=" * 80)
 
 report_text = "\n".join(output)
 
-with open("report_002272.txt", "w", encoding="utf-8") as f:
+# 输出到 reports/ 目录
+report_path = PROJECT_ROOT / "reports" / "002272_report.txt"
+report_path.parent.mkdir(parents=True, exist_ok=True)
+with open(report_path, "w", encoding="utf-8") as f:
     f.write(report_text)
 
-print("\n报告已保存到 report_002272.txt")
+print(f"\n报告已保存到 {report_path}")
 print(f"综合评分: {result.get('overall_score', 0)}/100 | 评级: {result.get('overall_grade', '-')}")

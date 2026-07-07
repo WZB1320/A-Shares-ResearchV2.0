@@ -3,7 +3,7 @@
 """
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 print("="*80)
 print("Harness 架构测试")
@@ -55,12 +55,19 @@ except Exception as e:
     import traceback
     print(traceback.format_exc())
 
-print("\n[6] 测试 graph.workflow（兼容备用层）...")
+print("\n[6] 测试 graph.workflow (已废弃)...")
 try:
-    from graph.workflow import create_workflow, run_workflow
-    print(f"   [OK] workflow 导入成功（兼容备用层）")
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        from graph.workflow import create_workflow, run_workflow
+        deprecated_warned = any(issubclass(wi.category, DeprecationWarning) for wi in w)
+    if deprecated_warned:
+        print(f"   [OK] workflow 导入成功（已正确触发 DeprecationWarning）")
+    else:
+        print(f"   [WARN] workflow 导入成功但未触发 DeprecationWarning")
     app = create_workflow()
-    print(f"   [OK] workflow 创建成功")
+    print(f"   [OK] workflow 创建成功（保留用于回滚参考）")
 except Exception as e:
     print(f"   [FAIL] 失败：{e}")
     import traceback
@@ -81,6 +88,6 @@ print("="*80)
 print("\n[说明]")
 print("   - 所有代码模块都能正常导入")
 print("   - Harness 三层架构正常")
-print("   - LangGraph 工作流（兼容备用层）可以正常创建")
-print("   - 推荐使用 Web 端（app.py）或 ChiefAgent 直接调用")
-print("   - 实际运行需要网络连接数据源（akshare/tushare）")
+print("   - LangGraph workflow 已标记为 deprecated（保留用于回滚）")
+print("   - 统一入口：main.py → ChiefAgent.analyze()")
+print("   - 实际运行需要网络连接数据源")

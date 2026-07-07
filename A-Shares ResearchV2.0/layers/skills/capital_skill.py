@@ -133,7 +133,9 @@ class CapitalSkill:
     def analyze_north_flow(capital_data: Dict) -> NorthFlowMetrics:
         north = capital_data.get("north", [])
         if not isinstance(north, list) or len(north) < 5:
-            return NorthFlowMetrics(0, 0, 0, 0, 0, "数据不足", "数据不足", "数据不足", "数据不足", 0)
+            # 因监管政策自2024-08-16起停止披露个股日度持股明细
+            reason = capital_data.get("north_unavailable_reason", "数据不足")
+            return NorthFlowMetrics(0, 0, 0, 0, 0, reason, reason, reason, reason, 0)
 
         values = [CapitalSkill._extract_value(x) for x in north]
         latest = values[-1]

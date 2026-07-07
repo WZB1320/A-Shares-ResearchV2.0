@@ -314,12 +314,20 @@ class AkShareDataSource(MarketDataSourceBase):
             import akshare as ak
             north = []
             try:
-                north_df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
-                if not north_df.empty:
-                    north = north_df.tail(30).to_dict("records")
+                # 注意：AkShare市场级北向数据，非个股维度
+                if hasattr(ak, 'stock_hsgt_north_net_flow_in_em'):
+                    north_df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+                    if not north_df.empty:
+                        north = north_df.tail(30).to_dict("records")
             except Exception:
                 pass
-            return {"north": north, "margin": [], "dragon": [], "note": "A股：北向资金"}
+            return {
+                "north": north,
+                "margin": [], "dragon": [],
+                "note": "A股：北向资金（市场级，非个股）",
+                "north_unavailable": len(north) == 0,
+                "north_unavailable_reason": "因监管政策自2024-08-16停止披露北向个股日度持股明细" if len(north) == 0 else "",
+            }
         except Exception as e:
             logger.warning(f"[AkShare] capital_data(A股) 获取失败: {e}")
             return {"north": [], "margin": [], "dragon": [], "_data_unavailable": True}

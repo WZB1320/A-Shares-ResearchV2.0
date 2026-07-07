@@ -79,17 +79,17 @@ class DataValidator:
     TECH_MIN_ROWS = 20
     TECH_MAX_STALE_DAYS = 30
 
-    FUND_REQUIRED = ["roe", "gross_profit", "net_profit"]
+    FUND_REQUIRED = ["roe_ttm", "gross_margin_ttm", "net_profit_yoy_ttm"]
     FUND_BOUNDS = {
-        "roe": (-100, 100),
-        "gross_profit": (-100, 100),
-        "net_profit": (None, None),
+        "roe_ttm": (-100, 100),
+        "gross_margin_ttm": (-100, 100),
+        "net_profit_yoy_ttm": (None, None),
     }
 
     VAL_REQUIRED = ["pe_ttm", "pb", "price"]
     VAL_BOUNDS = {
-        "pe_ttm": (0.1, 1000),
-        "pb": (0.01, 50),
+        "pe_ttm": (-1000, 1000),  # 负PE表示亏损，是有效值
+        "pb": (0.001, 50),
         "price": (0.01, 50000),
     }
     VAL_MIN_HISTORY = 10
@@ -374,10 +374,10 @@ class DataValidator:
 
             if len(north) == 0:
                 dim.fields_warn += 1
-                dim.warnings.append("北向资金数据为空")
+                dim.warnings.append("北向资金因监管政策自2024-08-16停止披露个股日度持股明细，数据不可用")
             elif len(north) < self.CAPITAL_MIN_NORTH:
                 dim.fields_warn += 1
-                dim.warnings.append(f"北向资金数据不足: {len(north)}条 < {self.CAPITAL_MIN_NORTH}条")
+                dim.warnings.append(f"北向资金数据不足: {len(north)}条 < {self.CAPITAL_MIN_NORTH}条（历史数据截止2024-08-16）")
             else:
                 dim.fields_pass += 1
 

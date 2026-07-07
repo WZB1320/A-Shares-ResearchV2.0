@@ -22,6 +22,25 @@ class ValuationMetrics:
     percentile_pb_low_threshold: float
     percentile_pb_high_threshold: float
     data_available: bool
+    # PE Bands 三线定价（25%/50%/75% 分位 PE 值 + 对应价格）
+    pe_band_lower: Optional[float] = None
+    pe_band_mid: Optional[float] = None
+    pe_band_upper: Optional[float] = None
+    pe_band_lower_price: Optional[float] = None
+    pe_band_mid_price: Optional[float] = None
+    pe_band_upper_price: Optional[float] = None
+    # PB Bands 三线定价
+    pb_band_lower: Optional[float] = None
+    pb_band_mid: Optional[float] = None
+    pb_band_upper: Optional[float] = None
+    pb_band_lower_price: Optional[float] = None
+    pb_band_mid_price: Optional[float] = None
+    pb_band_upper_price: Optional[float] = None
+    # 涨幅归因（1年前 vs 现在）
+    price_return_1y: Optional[float] = None
+    pe_return_1y: Optional[float] = None
+    eps_return_1y: Optional[float] = None
+    attribution_note: Optional[str] = None
 
 
 @dataclass
@@ -92,6 +111,122 @@ class ValuationSkill:
             return round(below / len(valid) * 100, 1)
         except Exception:
             return None
+
+    # === PE Bands / PB Bands / 涨幅归因 三个辅助方法 ===
+
+    @staticmethod
+    def _calc_pe_bands(pe_history: List[float], price: Optional[float], pe_ttm: Optional[float]) -> Dict[str, Optional[float]]:
+        """PE Bands 三线定价：取历史PE的25%/50%/75%分位，反推对应价格"""
+        empty = {"lower": None, "mid": None, "upper": None,
+                 "lower_price": None, "mid_price": None, "upper_price": None}
+        if not pe_history or price is None or pe_ttm is None or pe_ttm <= 0:
+            return empty
+        try:
+            valid = [v for v in pe_history if v is not None and v > 0]
+            if len(valid) < 30:
+                return empty
+            valid.sort()
+            n = len(valid)
+            # 手动计算分位（避免numpy依赖）
+            def _pct(p):
+                idx = int(round(p * (n - 1)))
+                return valid[idx]
+            eps = price / pe_ttm  # 反推每股收益
+            lower_pe = round(_pct(0.25), 1)
+            mid_pe = round(_pct(0.50), 1)
+            upper_pe = round(_pct(0.75), 1)
+            return {
+                "lower": lower_pe, "mid": mid_pe, "upper": upper_pe,
+                "lower_price": round(lower_pe * eps, 2),
+                "mid_price": round(mid_pe * eps, 2),
+                "upper_price": round(upper_pe * eps, 2),
+            }
+        except Exception:
+            return empty
+
+    @staticmethod
+    def _calc_pb_bands(pb_history: List[float], price: Optional[float], pb: Optional[float]) -> Dict[str, Optional[float]]:
+        """PB Bands 三线定价：取历史PB的25%/50%/75%分位，反推对应价格"""
+        empty = {"lower": None, "mid": None, "upper": None,
+                 "lower_price": None, "mid_price": None, "upper_price": None}
+        if not pb_history or price is None or pb is None or pb <= 0:
+            return empty
+        try:
+            valid = [v for v in pb_history if v is not None and v > 0]
+            if len(valid) < 30:
+                return empty
+            valid.sort()
+            n = len(valid)
+            def _pct(p):
+                idx = int(round(p * (n - 1)))
+                return valid[idx]
+            bvps = price / pb  # 反推每股净资产
+            lower_pb = round(_pct(0.25), 2)
+            mid_pb = round(_pct(0.50), 2)
+            upper_pb = round(_pct(0.75), 2)
+            return {
+                "lower": lower_pb, "mid": mid_pb, "upper": upper_pb,
+                "lower_price": round(lower_pb * bvps, 2),
+                "mid_price": round(mid_pb * bvps, 2),
+                "upper_price": round(upper_pb * bvps, 2),
+            }
+        except Exception:
+            return empty
+
+    @staticmethod
+    def _calc_price_attribution(pe_history: List[float], price: Optional[float], pe_ttm: Optional[float],
+                                 fundamental_data: Optional[Dict]) -> Dict[str, Optional[float]]:
+        """涨幅归因：分解1年股价涨幅为 PE贡献 + EPS贡献"""
+        empty = {"price_return": None, "pe_return": None, "eps_return": None, "note": None}
+        if not pe_history or price is None or pe_ttm is None or pe_ttm <= 0:
+            return empty
+        try:
+            # 取1年前的PE（约60个交易日）
+            pe_1y_ago = pe_history[-60] if len(pe_history) >= 60 else pe_history[0]
+            if pe_1y_ago is None or pe_1y_ago <= 0:
+                return empty
+
+            eps_now = price / pe_ttm
+            eps_1y_ago = eps_now  # 退化假设：EPS不变
+
+            # 尝试从 finance 列表取1年前后的EPS以提升精度
+            if fundamental_data and isinstance(fundamental_data, dict):
+                finance_list = fundamental_data.get("finance", [])
+                if isinstance(finance_list, list) and len(finance_list) >= 2:
+                    latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+                    old_fin = finance_list[0] if isinstance(finance_list[0], dict) else {}
+                    eps_now_fin = latest_fin.get("eps") or latest_fin.get("basic_eps") or latest_fin.get("每股收益")
+                    eps_old_fin = old_fin.get("eps") or old_fin.get("basic_eps") or old_fin.get("每股收益")
+                    if eps_now_fin and eps_old_fin and eps_old_fin > 0:
+                        eps_now = float(eps_now_fin)
+                        eps_1y_ago = float(eps_old_fin)
+
+            price_1y_ago = pe_1y_ago * eps_1y_ago
+            if price_1y_ago <= 0:
+                return empty
+
+            total_return = (price / price_1y_ago - 1) * 100
+            pe_contrib = (pe_ttm / pe_1y_ago - 1) * 100
+            eps_contrib = (eps_now / eps_1y_ago - 1) * 100
+
+            # 归因结论
+            if pe_contrib > 30 and eps_contrib < 10:
+                note = f"涨幅主要来自PE扩张({pe_contrib:+.1f}%)，EPS贡献仅{eps_contrib:+.1f}%——涨的是估值不是盈利"
+            elif eps_contrib > 20 and pe_contrib < 10:
+                note = f"涨幅主要来自EPS增长({eps_contrib:+.1f}%)，PE贡献{pe_contrib:+.1f}%——盈利驱动"
+            elif pe_contrib < -20 and eps_contrib > 10:
+                note = f"跌幅主要来自PE压缩({pe_contrib:+.1f}%)，EPS增长{eps_contrib:+.1f}%未能抵消估值回落"
+            else:
+                note = f"PE贡献{pe_contrib:+.1f}%，EPS贡献{eps_contrib:+.1f}%——估值与盈利共同驱动"
+
+            return {
+                "price_return": round(total_return, 1),
+                "pe_return": round(pe_contrib, 1),
+                "eps_return": round(eps_contrib, 1),
+                "note": note,
+            }
+        except Exception:
+            return empty
 
     @staticmethod
     def analyze(valuation_data: Dict, financial_data: Optional[Dict] = None) -> ValuationSignals:
@@ -273,10 +408,20 @@ class ValuationSkill:
 
         logger.info(f"[ValuationSkill] 分析完成 | PE: {pe_ttm} | PB: {pb} | 评分: {score} | 行业类别: {category_label} | 可用: {available}")
 
+        # === PE Bands / PB Bands / 涨幅归因 计算 ===
+        pe_bands = ValuationSkill._calc_pe_bands(pe_history, price, pe_ttm)
+        pb_bands = ValuationSkill._calc_pb_bands(pb_history, price, pb)
+        attribution = ValuationSkill._calc_price_attribution(pe_history, price, pe_ttm, financial_data)
+
         return ValuationSignals(
             metrics=ValuationMetrics(price, pe_ttm, pb, pe_percentile, pb_percentile, pe_10_avg,
                                    industry_category, thresholds["pe_low"] * 100, thresholds["pe_high"] * 100,
-                                   thresholds["pb_low"] * 100, thresholds["pb_high"] * 100, True),
+                                   thresholds["pb_low"] * 100, thresholds["pb_high"] * 100, True,
+                                   pe_band_lower=pe_bands["lower"], pe_band_mid=pe_bands["mid"], pe_band_upper=pe_bands["upper"],
+                                   pe_band_lower_price=pe_bands["lower_price"], pe_band_mid_price=pe_bands["mid_price"], pe_band_upper_price=pe_bands["upper_price"],
+                                   pb_band_lower=pb_bands["lower"], pb_band_mid=pb_bands["mid"], pb_band_upper=pb_bands["upper"],
+                                   pb_band_lower_price=pb_bands["lower_price"], pb_band_mid_price=pb_bands["mid_price"], pb_band_upper_price=pb_bands["upper_price"],
+                                   price_return_1y=attribution["price_return"], pe_return_1y=attribution["pe_return"], eps_return_1y=attribution["eps_return"], attribution_note=attribution["note"]),
             data_available_fields=available,
             data_unavailable_fields=unavailable,
             overall_score=score,
