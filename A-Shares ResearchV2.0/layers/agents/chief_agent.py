@@ -1,13 +1,14 @@
 import sys
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger("ChiefAgent")
 
-from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
+from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL, chat_completion
 from layers.connectors import DataConnector
 from layers.agents.tech_agent import TechAgent
 from layers.agents.fund_agent import FundAgent
@@ -24,7 +25,7 @@ from layers.agents.debate import (
 )
 from layers.validators import validator as data_validator
 from layers.memory.knowledge_base import (
-    save_snapshot, build_tracking_context, get_report_consensus,
+    build_tracking_context, get_report_consensus,
 )
 
 REPORT_MAX_TOKENS = 5500
@@ -52,7 +53,6 @@ class ChiefAgent:
         self.client = get_llm_client(self.model_name)
         self.data_connector = data_connector
         self.use_scheduler = use_scheduler
-        self.selected_agents = None
         self.scheduler = self._build_scheduler() if use_scheduler else None
         if use_scheduler:
             logger.info("[ChiefAgent] 启用 HarnessScheduler 编排模式")
@@ -65,7 +65,6 @@ class ChiefAgent:
             max_retries=2,
             parallel_execution=True,
             max_workers=MAX_PARALLEL_WORKERS,
-            checkpoint_enabled=True,
             validation_enabled=False,  # ChiefAgent 已有自己的数据校验
         ))
 
@@ -112,8 +111,12 @@ class ChiefAgent:
         if selected_agents is None:
             selected_agents = ["tech", "fund", "capital", "industry", "risk", "valuation"]
 
-        self.selected_agents = selected_agents
-        logger.info(f"[ChiefAgent] 开始机构级综合投研分析: {stock_code} | 选中Agent: {selected_agents}")
+        # 请求级会话ID：供调度层做状态/检查点隔离（并发分析互不影响）
+        analyze_session_id = f"{stock_code}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+
+        # 注意：不再把 selected_agents 写入实例属性（self.selected_agents），
+        # 旧逻辑下它是单例上的共享可变字段，并发请求会互相覆盖。
+        logger.info(f"[ChiefAgent] 开始机构级综合投研分析: {stock_code} | 选中Agent: {selected_agents} | session={analyze_session_id}")
 
         try:
             connector = self.data_connector or DataConnector(stock_code)
@@ -175,6 +178,16 @@ class ChiefAgent:
             full_context_parts.append(tracking_context)
         if report_consensus and "无存量研报" not in report_consensus:
             full_context_parts.append(report_consensus)
+
+        # 历史回测校准（自我校准闭环）：把过去 N 日方向验证胜率注入上下文
+        try:
+            from layers.backtest.runner import get_calibration_context
+            calib = get_calibration_context(stock_code)
+            if calib:
+                full_context_parts.append(calib)
+        except Exception as e:
+            logger.debug(f"[ChiefAgent] 回测校准上下文获取失败(已跳过): {e}")
+
         full_context = "\n\n".join(full_context_parts)
         logger.info(f"[ChiefAgent] 知识库上下文注入完成 | 耗时: {time.time() - mem_start:.1f}s")
 
@@ -203,6 +216,7 @@ class ChiefAgent:
                     selected_agents=selected_agents,
                     model_name=self.model_name,
                     quality_context=full_context,
+                    session_id=analyze_session_id,
                 )
             except Exception as e:
                 logger.error(
@@ -222,6 +236,7 @@ class ChiefAgent:
                     all_data=all_data,
                     scheduler=self.scheduler,
                     model_name=self.model_name,
+                    quality_context=full_context,
                 )
             except Exception as e:
                 logger.warning(f"[ChiefAgent] 质量门禁异常，跳过: {e}")
@@ -281,18 +296,22 @@ class ChiefAgent:
         total_time = time.time() - start_time
         logger.info(f"[ChiefAgent] 机构级综合投研分析完成: {stock_code} | 总耗时: {total_time:.1f}s | 图表类型: {len(chart_data)}")
 
-        # === 知识库持久化：保存分析快照 ===
+        # === 计算快照字段（不再在此处落库，改为随返回值交给 app.py 统一写入） ===
+        # 说明：原 save_snapshot 在此处单独写入 knowledge_base，与 app.py 的 cache_save
+        # 构成双写。现统一为单次写入（见 db.save_analysis），故这里只负责"算出字段"。
+        dim_scores = {}
+        price = None
+        key_conclusion = ""
+        top_signals = []
+        top_risks = []
         try:
-            dim_scores = {}
             for dim_name, info in aggregation.get("dimensions", {}).items():
                 dim_scores[dim_name] = info.get("score", 50)
 
-            price = None
             basic_info = all_data.get("basic_info", {}) or {}
             if basic_info:
                 price = basic_info.get("最新价") or basic_info.get("price")
 
-            key_conclusion = ""
             aggregation_subset = aggregation or {}
             all_signals = aggregation_subset.get("all_signals", []) or []
 
@@ -305,20 +324,10 @@ class ChiefAgent:
                 if not key_conclusion and all_signals:
                     key_conclusion = all_signals[0]
 
-            save_snapshot(
-                stock_code=stock_code,
-                overall_score=aggregation.get("overall_score", 50),
-                overall_grade=aggregation.get("overall_grade", "中性"),
-                dimension_scores=dim_scores,
-                key_conclusion=key_conclusion,
-                top_signals=all_signals[:5],
-                top_risks=(aggregation.get("all_risks", []) or [])[:5],
-                price_at_analysis=price,
-                full_report_md=final_report,
-            )
-            logger.info(f"[ChiefAgent] 分析快照已存储: {stock_code}")
+            top_signals = all_signals[:5]
+            top_risks = (aggregation.get("all_risks", []) or [])[:5]
         except Exception as e:
-            logger.warning(f"[ChiefAgent] 知识库存储失败: {e}")
+            logger.warning(f"[ChiefAgent] 快照字段计算失败（将回退默认值）: {e}")
 
         try:
             from layers.memory.knowledge_base import save_analysis_as_events
@@ -335,6 +344,12 @@ class ChiefAgent:
             "overall_grade": aggregation.get("overall_grade", "中性"),
             "overall_score": aggregation.get("overall_score", 50),
             "context_text": context_text,
+            # 快照字段：交给 app.py 通过 db.save_analysis 一次性落库，避免双写
+            "dimension_scores": dim_scores,
+            "key_conclusion": key_conclusion,
+            "top_signals": top_signals,
+            "top_risks": top_risks,
+            "price_at_analysis": price,
         }
 
     def _run_agents_legacy(
@@ -469,16 +484,16 @@ Step 9: 基于以上八步，制定具体的操作策略建议
 **量化锚定强制规则**：所有判断必须附带具体数字，禁止使用"极低/极高/大幅/显著"等模糊描述。✅"换手率0.3%低于历史80%分位" ❌"换手率极低"。关键变量观察台的触发线必须精确到具体数值。"""
 
         try:
-            completion = self.client.chat.completions.create(
-                model=get_model_id(self.model_name),
+            final_narrative = chat_completion(
+                model_name=self.model_name,
                 messages=[
                     {"role": "system", "content": "你是一位资深首席策略分析师，擅长多维度交叉验证和综合研判。请严格基于提供的数据进行分析，不要编造任何未提供的数据。如果数据不足，请明确指出并降低结论确定性。"},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=LLM_TEMPERATURE,
-                max_tokens=REPORT_MAX_TOKENS
+                max_tokens=REPORT_MAX_TOKENS,
+                task_tag="ChiefAgent",
             )
-            final_narrative = completion.choices[0].message.content.strip()
 
             header = f"""# {stock_code} 深度投研策略报告
 

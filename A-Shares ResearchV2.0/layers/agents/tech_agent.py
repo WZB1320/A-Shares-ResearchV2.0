@@ -5,48 +5,38 @@ from typing import Dict, Optional, List
 
 logger = logging.getLogger("TechAgent")
 
-from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
+from config.llm_config import DEFAULT_MODEL
 from layers.connectors import DataConnector
-from layers.skills.tech_skill import TechSkill, tech_skill
-from layers.agents.report_schema import parse_json_report, error_report, unavailable_report, AgentReport
-from layers.agents.base_agent import QUANT_ANCHOR_RULE
-
-REPORT_MAX_TOKENS = 1200
-LLM_TEMPERATURE = 0.0
+from layers.skills.tech_skill import tech_skill
+from layers.agents.base_agent import BaseAnalysisAgent, QUANT_ANCHOR_RULE
 
 
-class TechAgent:
+class TechAgent(BaseAnalysisAgent):
+    """技术面分析 Agent"""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, data_connector: Optional[DataConnector] = None):
-        self.model_name = model_name.lower()
-        self.client = get_llm_client(self.model_name)
-        self.data_connector = data_connector
-        self.tech_skill = tech_skill
+    MAX_TOKENS = 1200
+    LLM_TEMPERATURE = 0.0
 
-    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> Dict:
-        logger.info(f"[TechAgent] 开始机构级技术面分析: {stock_code}")
+    @property
+    def dimension(self) -> str:
+        return "tech"
 
+    def _get_data(self, state):
         tech_data = None
-        quality_context = None
         if state is not None:
             tech_data = state.get("tech_data")
-            quality_context = state.get("quality_context")
-
         if tech_data is None and self.data_connector is not None:
             tech_data = self.data_connector.fetch_tech_data()
+        return tech_data
 
-        if tech_data is None:
-            logger.warning(f"[TechAgent] 无技术面数据: {stock_code}")
-            return unavailable_report("tech").to_dict()
+    def _run_skill(self, data):
+        return tech_skill.analyze(data)
 
-        try:
-            signals = self.tech_skill.analyze(tech_data)
-        except Exception as e:
-            error_msg = f"技术面指标计算失败：{str(e)}"
-            logger.error(f"[TechAgent] {error_msg}")
-            return error_report("tech", error_msg).to_dict()
+    def _system_prompt(self) -> str:
+        return "你是一位资深券商技术分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"
 
-        prompt = f"""你是一位资深券商技术分析师，请基于以下量价技术分析数据，输出一份结构化的技术研判报告。
+    def _build_prompt(self, stock_code: str, signals, quality_context: Optional[str]) -> str:
+        return f"""你是一位资深券商技术分析师，请基于以下量价技术分析数据，输出一份结构化的技术研判报告。
 
 {quality_context or ''}
 
@@ -85,25 +75,6 @@ Step 4: 综合以上三步骤，计算整体强度，得出最终结论
 7. 仅基于提供的数据做判断，不编造数据
 8. 只输出JSON，不要输出任何其他内容
 {QUANT_ANCHOR_RULE}"""
-
-        try:
-            completion = self.client.chat.completions.create(
-                model=get_model_id(self.model_name),
-                messages=[
-                    {"role": "system", "content": "你是一位资深券商技术分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=LLM_TEMPERATURE,
-                max_tokens=REPORT_MAX_TOKENS
-            )
-            raw = completion.choices[0].message.content.strip()
-            report = parse_json_report(raw, "tech")
-            logger.info(f"[TechAgent] 结构化技术面分析完成: {stock_code} | score={report.overall_score} grade={report.grade}")
-            return report.to_dict()
-        except Exception as e:
-            error_msg = f"LLM调用失败：{str(e)}"
-            logger.error(f"[TechAgent] {error_msg}")
-            return error_report("tech", error_msg).to_dict()
 
     @staticmethod
     def _build_data_context(stock_code: str, signals) -> str:

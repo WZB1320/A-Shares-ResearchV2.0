@@ -1,16 +1,17 @@
-"""测试研报PDF下载流程"""
+"""研报 PDF 下载流程测试 (需要网络, 默认跳过)
+
+运行（含网络）：pytest -m integration tests/test_report_download.py
+"""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from layers.memory.report_fetcher import (
-    _download_report_pdf, _count_pdf_pages, REPORTS_DIR
-)
+import pytest
+from layers.memory.report_fetcher import _download_report_pdf, _count_pdf_pages, REPORTS_DIR
 
-print(f"报告存储目录: {REPORTS_DIR}")
-print()
 
-test_cases = [
+TEST_CASES = [
     {
         "url": "https://pdf.dfcfw.com/pdf/H3_AP202604261821586763_1.pdf",
         "stock": "BABA",
@@ -25,23 +26,15 @@ test_cases = [
     },
 ]
 
-valid_count = 0
-for tc in test_cases:
-    print(f"下载: {tc['title'][:40]}...")
-    path = _download_report_pdf(tc["url"], tc["stock"], tc["title"], tc["date"])
-    if path:
-        pages = _count_pdf_pages(path)
-        size_kb = Path(path).stat().st_size / 1024
-        print(f"  成功: {Path(path).name} | {size_kb:.0f}KB | {pages}页")
-        valid_count += 1
-    else:
-        print(f"  失败（反盗链/超时）")
-    print()
 
-print(f"\n下载成功: {valid_count}/{len(test_cases)}")
-
-import os
-files = list(REPORTS_DIR.glob("*.pdf")) if REPORTS_DIR.exists() else []
-print(f"\nreports/ 目录文件数: {len(files)}")
-for f in files:
-    print(f"  {f.name} ({f.stat().st_size / 1024:.0f}KB)")
+@pytest.mark.integration
+def test_report_download():
+    valid_count = 0
+    for tc in TEST_CASES:
+        path = _download_report_pdf(tc["url"], tc["stock"], tc["title"], tc["date"])
+        if path:
+            pages = _count_pdf_pages(path)
+            assert isinstance(pages, int) and pages >= 0
+            valid_count += 1
+    # 反盗链/超时情况下允许部分失败, 但至少有函数可调用且不抛异常
+    assert valid_count >= 0

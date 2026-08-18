@@ -16,6 +16,8 @@ import requests
 
 from config.env_config import env_config
 
+from .normalize import to_percent
+
 DATA_FETCH_RETRY = 3
 CAPITAL_DATA_DAYS = 30
 FINANCE_DATA_YEARS = 3
@@ -256,7 +258,8 @@ class LocalAPIDataSource(DataSourceBase):
                     "市盈率": latest.get("pe_ttm"),
                     "市净率": latest.get("pb"),
                     "股息率": latest.get("dividend_yield"),
-                    "净资产收益率": latest.get("roe_ttm") or latest.get("roe"),
+                    # 统一口径：比率字段一律 0–100 百分数（见 layers.connectors.normalize）
+                    "净资产收益率": to_percent(latest.get("roe_ttm") or latest.get("roe")),
                     "总市值": latest.get("total_mv")
                 }
 
@@ -501,8 +504,8 @@ class LocalAPIDataSource(DataSourceBase):
 
             if fina_data and fina_data.get("data") and len(fina_data["data"]) > 0:
                 latest = fina_data["data"][-1]
-                # ROE: API 返回 roe_ttm，不是 roe
-                financial_data["roe"] = latest.get("roe_ttm") or latest.get("roe")
+                # ROE: API 返回 roe_ttm，不是 roe；统一为 0–100 百分数
+                financial_data["roe"] = to_percent(latest.get("roe_ttm") or latest.get("roe"))
                 # 毛利率: API 返回 gross_margin_ttm
                 financial_data["gross_profit"] = latest.get("gross_margin_ttm") or latest.get("grossprofit_margin")
                 # 净利润同比: API 返回 net_profit_yoy_ttm，不是 profit_dedt_yoy

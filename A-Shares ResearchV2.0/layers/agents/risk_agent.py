@@ -5,52 +5,44 @@ from typing import Dict, Optional, List
 
 logger = logging.getLogger("RiskAgent")
 
-from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
+from config.llm_config import DEFAULT_MODEL
 from layers.connectors import DataConnector
-from layers.skills.risk_skill import RiskSkill, risk_skill
-from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
-from layers.agents.base_agent import QUANT_ANCHOR_RULE
-
-REPORT_MAX_TOKENS = 1600
-LLM_TEMPERATURE = 0.0
+from layers.skills.risk_skill import risk_skill
+from layers.agents.base_agent import BaseAnalysisAgent, QUANT_ANCHOR_RULE
 
 
-class RiskAgent:
+class RiskAgent(BaseAnalysisAgent):
+    """风险面分析 Agent"""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, data_connector: Optional[DataConnector] = None):
-        self.model_name = model_name.lower()
-        self.client = get_llm_client(self.model_name)
-        self.data_connector = data_connector
-        self.risk_skill = risk_skill
+    MAX_TOKENS = 1600
+    LLM_TEMPERATURE = 0.0
 
-    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> Dict:
-        logger.info(f"[RiskAgent] 开始机构级风险分析: {stock_code}")
+    @property
+    def dimension(self) -> str:
+        return "risk"
 
+    def _get_data(self, state):
         financial_data = None
         tech_data = None
-        quality_context = None
         if state is not None:
             financial_data = state.get("financial_data") or state.get("fundamental_data")
             tech_data = state.get("tech_data")
-            quality_context = state.get("quality_context")
-
         if financial_data is None and self.data_connector is not None:
             financial_data = self.data_connector.fetch_financial_data()
         if tech_data is None and self.data_connector is not None:
             tech_data = self.data_connector.fetch_tech_data()
+        # 次级输入暂存，供 _run_skill 使用（主输入 financial_data 决定不可用判定）
+        self._ctx_tech_data = tech_data
+        return financial_data
 
-        if financial_data is None:
-            logger.warning(f"[RiskAgent] 无风险分析数据: {stock_code}")
-            return unavailable_report("risk").to_dict()
+    def _run_skill(self, data):
+        return risk_skill.analyze(data, self._ctx_tech_data)
 
-        try:
-            signals = self.risk_skill.analyze(financial_data, tech_data)
-        except Exception as e:
-            error_msg = f"风险指标计算失败：{str(e)}"
-            logger.error(f"[RiskAgent] {error_msg}")
-            return error_report("risk", error_msg).to_dict()
+    def _system_prompt(self) -> str:
+        return "你是一位资深券商风控分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"
 
-        prompt = f"""你是一位资深券商风控分析师，请基于以下风险分析数据，输出一份结构化的风险评估报告。
+    def _build_prompt(self, stock_code: str, signals, quality_context: Optional[str]) -> str:
+        return f"""你是一位资深券商风控分析师，请基于以下风险分析数据，输出一份结构化的风险评估报告。
 
 {quality_context or ''}
 
@@ -91,25 +83,6 @@ Step 4: 综合各维度风险等级，加权计算整体风险评分
 9. 只输出JSON，不要输出任何其他内容
 10. **重要**：负值（如ROE为负、PE为负）是有效数据点，表示公司亏损，不是"数据缺失"。只有当数据明确标注为"不可用"或"数据可用：否"时，才能在risk_factors中提及"数据缺失"。
 {QUANT_ANCHOR_RULE}"""
-
-        try:
-            completion = self.client.chat.completions.create(
-                model=get_model_id(self.model_name),
-                messages=[
-                    {"role": "system", "content": "你是一位资深券商风控分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=LLM_TEMPERATURE,
-                max_tokens=REPORT_MAX_TOKENS
-            )
-            raw = completion.choices[0].message.content.strip()
-            report = parse_json_report(raw, "risk")
-            logger.info(f"[RiskAgent] 结构化风险分析完成: {stock_code} | score={report.overall_score} grade={report.grade}")
-            return report.to_dict()
-        except Exception as e:
-            error_msg = f"LLM调用失败：{str(e)}"
-            logger.error(f"[RiskAgent] {error_msg}")
-            return error_report("risk", error_msg).to_dict()
 
     @staticmethod
     def _build_data_context(stock_code: str, signals) -> str:

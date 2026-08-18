@@ -3,14 +3,20 @@
 - report 模式：基于分析报告的上下文追问（原功能）
 - live 模式：通用股票实时问答，无需先跑分析（方向1）
 - plain 模式：纯 LLM 问答，投资知识/概念类问题（方向4简单版）
+
+并发/会话隔离：
+- 引擎本身无共享可变分析状态，但新增服务端会话（session_id）用于维护
+  每路对话的历史上下文与绑定的股票代码，避免多用户/多标签页共用全局
+  “最新分析”导致上下文串台。无 session_id 时退化为原无状态模式。
 """
 import re
 import logging
+import threading
 from typing import Dict, List, Optional
 
 import pandas as pd
 
-from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
+from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL, chat_completion
 from db import cache_get_latest
 
 logger = logging.getLogger("ChatEngine")
@@ -52,28 +58,78 @@ class ChatEngine:
     def __init__(self, model_name: str = DEFAULT_MODEL):
         self.model_name = model_name.lower()
         self.client = get_llm_client(self.model_name)
+        # 服务端会话存储：session_id -> {"stock_code": str, "history": [{"role","content"}]}
+        # 使用锁保护，避免多线程并发读写同一会话历史造成交叉污染。
+        self._sessions_lock = threading.Lock()
+        self._sessions: Dict[str, Dict] = {}
 
-    def chat(self, stock_code: str, messages: List[Dict], new_message: str) -> str:
+    def _get_or_create_session(self, session_id: str, stock_code: str) -> Dict:
+        """获取（或创建）会话，并在识别到新股票时更新绑定代码。
+
+        注意：仅更新绑定的股票代码，不主动清空历史，保证同一会话内的
+        可追溯性；报告上下文按当前绑定代码实时读取最新缓存。
+        """
+        with self._sessions_lock:
+            sess = self._sessions.get(session_id)
+            if sess is None:
+                sess = {"stock_code": stock_code, "history": []}
+                self._sessions[session_id] = sess
+            elif stock_code and stock_code != sess["stock_code"]:
+                sess["stock_code"] = stock_code
+            return sess
+
+    def _append_to_session(self, session_id: str, user_msg: str, reply: str) -> None:
+        """将本轮问答追加到会话历史，并裁剪到最大长度。"""
+        with self._sessions_lock:
+            sess = self._sessions.get(session_id)
+            if sess is None:
+                return
+            sess["history"].append({"role": "user", "content": user_msg})
+            sess["history"].append({"role": "assistant", "content": reply})
+            max_len = CHAT_MAX_HISTORY * 2
+            if len(sess["history"]) > max_len:
+                sess["history"] = sess["history"][-max_len:]
+
+    def chat(self, stock_code: str, messages: List[Dict], new_message: str,
+             session_id: Optional[str] = None) -> str:
         """
         对话入口 - 自动路由到对应模式
         - stock_code 可为空（前端未传，或用户未分析直接提问）
         - 自动从 new_message 中提取股票代码
+        - session_id 可选：提供后服务端按会话维护历史上下文与绑定股票，
+          避免多用户/多标签页串台；不提供则退化为无状态模式（沿用前端 messages）。
         """
         # 1. 确定要分析的股票代码：优先用前端传入的，其次从问题中提取
         target_code = stock_code or extract_stock_code(new_message) or ""
 
-        # 2. 路由决策
-        if target_code:
+        # 2. 解析会话上下文
+        if session_id:
+            sess = self._get_or_create_session(session_id, target_code)
+            effective_code = sess["stock_code"]
+            history = list(sess["history"])  # 复制快照，避免迭代期间被其他线程修改
+        else:
+            effective_code = target_code
+            history = [m for m in (messages or [])]
+
+        # 3. 路由决策
+        if effective_code:
             # 有股票代码 → 检查是否有分析报告缓存
-            cache = cache_get_latest(target_code) if target_code else None
+            cache = cache_get_latest(effective_code) if effective_code else None
             if cache and (cache.get("context_text") or cache.get("report_markdown")):
                 # 有分析报告 → report 模式
-                return self._chat_report(target_code, cache, messages, new_message)
-            # 无分析报告 → live 模式（实时查询数据）
-            return self._chat_live(target_code, messages, new_message)
+                reply = self._chat_report(effective_code, cache, history, new_message)
+            else:
+                # 无分析报告 → live 模式（实时查询数据）
+                reply = self._chat_live(effective_code, history, new_message)
+        else:
+            # 无股票代码 → plain 模式（纯 LLM 问答）
+            reply = self._chat_plain(history, new_message)
 
-        # 3. 无股票代码 → plain 模式（纯 LLM 问答）
-        return self._chat_plain(messages, new_message)
+        # 4. 回写会话历史（仅在有 session_id 时）
+        if session_id:
+            self._append_to_session(session_id, new_message, reply)
+
+        return reply
 
     # ==================== report 模式（原功能） ====================
 
@@ -223,13 +279,13 @@ class ChatEngine:
         logger.info(f"[ChatEngine] {mode}模式 | 股票={code_label} | 历史轮次={len(recent)//2} | 问题={new_message[:50]}...")
 
         try:
-            response = self.client.chat.completions.create(
-                model=get_model_id(self.model_name),
+            reply = chat_completion(
+                model_name=self.model_name,
                 messages=api_messages,
                 temperature=CHAT_TEMPERATURE,
                 max_tokens=CHAT_MAX_TOKENS,
+                task_tag=f"ChatEngine:{mode}",
             )
-            reply = response.choices[0].message.content
             logger.info(f"[ChatEngine] {mode}模式回复成功 | 长度={len(reply)}")
             return reply
         except Exception as e:

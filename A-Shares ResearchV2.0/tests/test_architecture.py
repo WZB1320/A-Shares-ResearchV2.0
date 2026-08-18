@@ -1,93 +1,49 @@
+"""三层架构模块导入完整性验证 (pytest 版)
+
+运行：pytest tests/test_architecture.py
+仅验证“能否导入/实例化”，不触发网络/LLM。graph.workflow 已废弃删除，不再校验。
 """
-架构测试：验证 Harness 架构是否正确
-"""
+import importlib
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-print("="*80)
-print("Harness 架构测试")
-print("="*80)
 
-print("\n[1] 测试 config.llm_config...")
-try:
-    from config.llm_config import get_llm_client, MODEL_CONFIG_MAP
-    print(f"   [OK] 导入成功")
-    print(f"   [OK] 支持的模型：{list(MODEL_CONFIG_MAP.keys())}")
-except Exception as e:
-    print(f"   [FAIL] 失败：{e}")
+def _imp(name: str):
+    return importlib.import_module(name)
 
-print("\n[2] 测试 harness 模块...")
-try:
-    from harness.state import HarnessStateManager, HarnessState
-    from harness.validator import HarnessValidator
-    from harness.scheduler import HarnessScheduler, SchedulerConfig
-    print(f"   [OK] harness 模块导入成功")
-except Exception as e:
-    print(f"   [FAIL] 失败：{e}")
 
-print("\n[3] 测试 layers.skills...")
-try:
-    from layers.skills import (
-        TechSkill, FundSkill, CapitalSkill,
-        IndustrySkill, ValuationSkill, RiskSkill
-    )
-    print(f"   [OK] skills 层导入成功")
-except Exception as e:
-    print(f"   [FAIL] 失败：{e}")
+def test_architecture_imports():
+    # Skills (6 个维度)
+    for m in [
+        "layers.skills.tech_skill", "layers.skills.fund_skill",
+        "layers.skills.capital_skill", "layers.skills.industry_skill",
+        "layers.skills.valuation_skill", "layers.skills.risk_skill",
+    ]:
+        assert _imp(m) is not None, f"无法导入 {m}"
 
-print("\n[4] 测试 layers.connectors...")
-try:
-    from layers.connectors import DataConnector, ToolConnector
-    print(f"   [OK] connectors 层导入成功")
-except Exception as e:
-    print(f"   [FAIL] 失败：{e}")
+    # Connectors (顶层 import pandas/requests，已在托管环境安装)
+    for m in [
+        "layers.connectors.data_connector", "layers.connectors.tool_connector",
+        "layers.connectors.market_data_sources",
+    ]:
+        assert _imp(m) is not None, f"无法导入 {m}"
 
-print("\n[5] 测试 layers.agents...")
-try:
-    from layers.agents import (
-        DataAgent, TechAgent, FundAgent, CapitalAgent,
-        IndustryAgent, RiskAgent, ValuationAgent, ChiefAgent
-    )
-    print(f"   [OK] agents 层导入成功")
-except Exception as e:
-    print(f"   [FAIL] 失败：{e}")
-    import traceback
-    print(traceback.format_exc())
+    # Agents (7 个 + report_schema)
+    for m in [
+        "layers.agents.tech_agent", "layers.agents.fund_agent",
+        "layers.agents.capital_agent", "layers.agents.industry_agent",
+        "layers.agents.risk_agent", "layers.agents.valuation_agent",
+        "layers.agents.chief_agent", "layers.agents.data_agent",
+        "layers.agents.report_schema",
+    ]:
+        assert _imp(m) is not None, f"无法导入 {m}"
 
-print("\n[6] 测试 graph.workflow (已废弃)...")
-try:
-    import warnings
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        from graph.workflow import create_workflow, run_workflow
-        deprecated_warned = any(issubclass(wi.category, DeprecationWarning) for wi in w)
-    if deprecated_warned:
-        print(f"   [OK] workflow 导入成功（已正确触发 DeprecationWarning）")
-    else:
-        print(f"   [WARN] workflow 导入成功但未触发 DeprecationWarning")
-    app = create_workflow()
-    print(f"   [OK] workflow 创建成功（保留用于回滚参考）")
-except Exception as e:
-    print(f"   [FAIL] 失败：{e}")
-    import traceback
-    print(traceback.format_exc())
+    # Harness
+    assert _imp("harness.scheduler") is not None
+    assert _imp("harness.state") is not None
+    assert _imp("harness.validator") is not None
 
-print("\n[7] 测试 main.py 导入...")
-try:
-    import main
-    print(f"   [OK] main.py 导入成功")
-except Exception as e:
-    print(f"   [FAIL] 失败：{e}")
-    import traceback
-    print(traceback.format_exc())
-
-print("\n" + "="*80)
-print("[OK] 架构测试完成！")
-print("="*80)
-print("\n[说明]")
-print("   - 所有代码模块都能正常导入")
-print("   - Harness 三层架构正常")
-print("   - LangGraph workflow 已标记为 deprecated（保留用于回滚）")
-print("   - 统一入口：main.py → ChiefAgent.analyze()")
-print("   - 实际运行需要网络连接数据源")
+    # Top-level 聚合包
+    assert _imp("layers") is not None

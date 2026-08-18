@@ -1,10 +1,20 @@
-"""知识库 + 研报管理 — 持久化层"""
+"""知识库 + 研报管理 — 持久化层
+
+注意（2026-08-18 重构）：
+  分析快照（analysis_snapshots）已合并到 db.py 的 `analysis_records` 单表。
+  本模块的 save_snapshot / get_latest_snapshot / get_snapshot_history /
+  build_tracking_context 现在全部委托 db 模块，不再持有独立的快照表，
+  避免与 analysis_cache 的重复双写。
+  本模块仍独立管理 research_reports（研报库）与 stock_timeline（事件时间线）。
+"""
 import sqlite3
 import json
 import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
+
+from db import get_latest_analysis, get_analysis_history, save_analysis
 
 logger = logging.getLogger("KnowledgeBase")
 
@@ -24,22 +34,6 @@ def init_kb():
     conn = _get_conn()
     try:
         conn.executescript("""
-            CREATE TABLE IF NOT EXISTS analysis_snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                stock_code TEXT NOT NULL,
-                analysis_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-                overall_score INTEGER DEFAULT 50,
-                overall_grade TEXT DEFAULT '',
-                dimension_scores TEXT DEFAULT '{}',
-                key_conclusion TEXT DEFAULT '',
-                top_signals TEXT DEFAULT '[]',
-                top_risks TEXT DEFAULT '[]',
-                price_at_analysis REAL,
-                full_report_md TEXT DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_snapshot_stock_time
-                ON analysis_snapshots(stock_code, analysis_time DESC);
-
             CREATE TABLE IF NOT EXISTS research_reports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 stock_code TEXT NOT NULL,
@@ -93,63 +87,31 @@ def save_snapshot(
     price_at_analysis: float = None,
     full_report_md: str = "",
 ) -> bool:
-    conn = _get_conn()
-    try:
-        conn.execute(
-            """INSERT INTO analysis_snapshots
-               (stock_code, overall_score, overall_grade, dimension_scores,
-                key_conclusion, top_signals, top_risks, price_at_analysis, full_report_md)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                stock_code.strip(),
-                overall_score,
-                overall_grade,
-                json.dumps(dimension_scores, ensure_ascii=False),
-                key_conclusion,
-                json.dumps(top_signals, ensure_ascii=False),
-                json.dumps(top_risks, ensure_ascii=False),
-                price_at_analysis,
-                full_report_md,
-            ),
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error(f"[KB] 保存快照失败 ({stock_code}): {e}")
-        return False
-    finally:
-        conn.close()
+    """兼容别名：委托 db.save_analysis 写入统一分析记录表。
+
+    全站唯一的"分析落库"入口是 db.save_analysis；本函数保留仅为兼容旧调用/测试。
+    """
+    return save_analysis(
+        stock_code,
+        overall_grade=overall_grade,
+        overall_score=overall_score,
+        dimension_scores=dimension_scores,
+        key_conclusion=key_conclusion,
+        top_signals=top_signals,
+        top_risks=top_risks,
+        price_at_analysis=price_at_analysis,
+        full_report_md=full_report_md,
+    )
 
 
 def get_latest_snapshot(stock_code: str) -> Optional[Dict]:
-    conn = _get_conn()
-    try:
-        row = conn.execute(
-            "SELECT * FROM analysis_snapshots WHERE stock_code = ? ORDER BY analysis_time DESC LIMIT 1",
-            (stock_code.strip(),),
-        ).fetchone()
-        if row:
-            d = dict(row)
-            for key in ("dimension_scores", "top_signals", "top_risks"):
-                raw = d.get(key, "{}")
-                if isinstance(raw, str):
-                    d[key] = json.loads(raw)
-            return d
-        return None
-    finally:
-        conn.close()
+    """委托 db 读取最近一次分析记录（含已解析的 dimension_scores/top_signals/top_risks）。"""
+    return get_latest_analysis(stock_code)
 
 
 def get_snapshot_history(stock_code: str, limit: int = 5) -> List[Dict]:
-    conn = _get_conn()
-    try:
-        rows = conn.execute(
-            "SELECT * FROM analysis_snapshots WHERE stock_code = ? ORDER BY analysis_time DESC LIMIT ?",
-            (stock_code.strip(), limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
+    """委托 db 读取最近 N 条分析记录。"""
+    return get_analysis_history(stock_code, limit)
 
 
 def build_tracking_context(stock_code: str) -> str:
@@ -158,7 +120,7 @@ def build_tracking_context(stock_code: str) -> str:
     if not prev:
         return "（首次分析，无历史记录可回溯）"
 
-    prev_time = prev.get("analysis_time", "未知")
+    prev_time = prev.get("analyzed_at") or prev.get("analysis_time", "未知")
     prev_score = prev.get("overall_score", 0)
     prev_grade = prev.get("overall_grade", "未知")
     prev_conclusion = prev.get("key_conclusion", "无记录")

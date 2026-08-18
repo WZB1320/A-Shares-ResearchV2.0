@@ -222,13 +222,13 @@ python test_architecture.py
 
 ### 知识库架构
 
-知识库基于 SQLite 持久化存储（`data/knowledge/stock_memory.db`），包含三张核心表：
+分析记录（每次分析的评分/结论/信号/风险快照 + 报告全文/图表/对话上下文）统一持久化在 `data/harness.db` 的 `analysis_records` 单表（原 `analysis_cache` 与 `analysis_snapshots` 已合并，避免双写与数据不同步）。研报与事件时间线仍存于 `data/knowledge/stock_memory.db`：
 
-| 表名 | 用途 | 写入时机 |
+| 表名 / 文件 | 用途 | 写入时机 |
 |------|------|----------|
-| `analysis_snapshots` | 每次分析的评分/结论/信号/风险快照 | ChiefAgent 分析完成后自动写入 |
-| `research_reports` | 机构券商研报（标题/机构/评级/摘要） | 刷新自选股时自动拉取 |
-| `stock_timeline` | 重大信号与风险事件时间线 | ChiefAgent 分析完成后自动写入 |
+| `analysis_records`（`data/harness.db`） | 每次分析的评分/结论/信号/风险快照 + 报告全文/图表/对话上下文 | 分析完成后由 `db.save_analysis` 一次性写入（每股票保留最近 30 条，超 180 天自动清理） |
+| `research_reports`（`data/knowledge/stock_memory.db`） | 机构券商研报（标题/机构/评级/摘要） | 刷新自选股时自动拉取 |
+| `stock_timeline`（`data/knowledge/stock_memory.db`） | 重大信号与风险事件时间线 | ChiefAgent 分析完成后自动写入 |
 
 **研报获取五层筛选漏斗**：
 1. **机构白名单**：Top 30 券商（中金/中信/华泰等）

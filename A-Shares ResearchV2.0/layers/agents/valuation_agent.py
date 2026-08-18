@@ -5,56 +5,48 @@ from typing import Dict, Optional
 
 logger = logging.getLogger("ValuationAgent")
 
-from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
+from config.llm_config import DEFAULT_MODEL
 from layers.connectors import DataConnector
 from layers.skills.valuation_skill import ValuationSkill, valuation_skill
-from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
-from layers.agents.base_agent import QUANT_ANCHOR_RULE
-
-REPORT_MAX_TOKENS = 1600
-LLM_TEMPERATURE = 0.0
+from layers.agents.base_agent import BaseAnalysisAgent, QUANT_ANCHOR_RULE
 
 
-class ValuationAgent:
+class ValuationAgent(BaseAnalysisAgent):
+    """估值面分析 Agent"""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, data_connector: Optional[DataConnector] = None):
-        self.model_name = model_name.lower()
-        self.client = get_llm_client(self.model_name)
-        self.data_connector = data_connector
-        self.valuation_skill = valuation_skill
+    MAX_TOKENS = 1600
+    LLM_TEMPERATURE = 0.0
 
-    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> Dict:
-        logger.info(f"[ValuationAgent] 开始估值分析: {stock_code}")
+    @property
+    def dimension(self) -> str:
+        return "valuation"
 
+    def _get_data(self, state):
         valuation_data = None
         fundamental_data = None
-        quality_context = None
         if state is not None:
             valuation_data = state.get("valuation_data")
             fundamental_data = state.get("fundamental_data") or state.get("financial_data")
-            quality_context = state.get("quality_context")
-
         if valuation_data is None and self.data_connector is not None:
             valuation_data = self.data_connector.fetch_valuation_data()
         if fundamental_data is None and self.data_connector is not None:
             fundamental_data = self.data_connector.fetch_fundamental_data()
+        # 次级输入暂存，供 _run_skill 与 _build_prompt 使用（主输入 valuation_data 决定不可用判定）
+        self._ctx_fundamental_data = fundamental_data
+        return valuation_data
 
-        if valuation_data is None:
-            logger.warning(f"[ValuationAgent] 无估值数据: {stock_code}")
-            return unavailable_report("valuation").to_dict()
+    def _run_skill(self, data):
+        return valuation_skill.analyze(data, self._ctx_fundamental_data)
 
-        try:
-            signals = self.valuation_skill.analyze(valuation_data, fundamental_data)
-        except Exception as e:
-            error_msg = f"估值指标计算失败：{str(e)}"
-            logger.error(f"[ValuationAgent] {error_msg}")
-            return error_report("valuation", error_msg).to_dict()
+    def _system_prompt(self) -> str:
+        return "你是一位资深券商估值分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"
 
-        prompt = f"""你是一位资深券商估值分析师，请基于以下估值分析数据，输出一份结构化的估值研判报告。
+    def _build_prompt(self, stock_code: str, signals, quality_context: Optional[str]) -> str:
+        return f"""你是一位资深券商估值分析师，请基于以下估值分析数据，输出一份结构化的估值研判报告。
 
 {quality_context or ''}
 
-{self._build_data_context(stock_code, signals, fundamental_data)}
+{self._build_data_context(stock_code, signals, self._ctx_fundamental_data)}
 
 请严格按以下JSON格式输出（不要包含任何其他文字，只输出JSON）：
 {{
@@ -100,25 +92,6 @@ Step 4: 综合PE和PB的判断，结合行业特性，给出最终估值评分
 13. **PE Bands 定价**：如果提供了PE Bands三线，必须基于当前股价相对Bands位置判断估值水平——跌破下轨=极度低估，位于下轨-中轨=偏低，位于中轨-上轨=合理，远超上轨=严重高估。thesis中必须明确指出"当前股价位于PE Bands的XX位置"。
 14. **涨幅归因**：如果提供了PE贡献和EPS贡献，必须在thesis中明确说明"涨的是PE还是EPS"，这是判断估值可持续性的核心——PE扩张驱动的涨幅不可持续，EPS增长驱动的涨幅才健康。
 {QUANT_ANCHOR_RULE}"""
-
-        try:
-            completion = self.client.chat.completions.create(
-                model=get_model_id(self.model_name),
-                messages=[
-                    {"role": "system", "content": "你是一位资深券商估值分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=LLM_TEMPERATURE,
-                max_tokens=REPORT_MAX_TOKENS
-            )
-            raw = completion.choices[0].message.content.strip()
-            report = parse_json_report(raw, "valuation")
-            logger.info(f"[ValuationAgent] 结构化估值分析完成: {stock_code} | score={report.overall_score} grade={report.grade}")
-            return report.to_dict()
-        except Exception as e:
-            error_msg = f"LLM调用失败：{str(e)}"
-            logger.error(f"[ValuationAgent] {error_msg}")
-            return error_report("valuation", error_msg).to_dict()
 
     @staticmethod
     def _build_data_context(stock_code: str, signals, fundamental_data=None) -> str:

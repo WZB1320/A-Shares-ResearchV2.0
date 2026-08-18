@@ -20,6 +20,8 @@ import pandas as pd
 
 from config.env_config import env_config
 
+from .normalize import to_percent, to_amount_yuan
+
 logger = logging.getLogger("MarketDS")
 
 # ── 技术指标统一计算（所有数据源复用） ──────────────────────
@@ -440,28 +442,21 @@ class AkShareDataSource(MarketDataSourceBase):
                 if not fin_df.empty:
                     latest = fin_df.iloc[-1]
 
-                    def _pct(val) -> float:
-                        s = str(val).replace("%", "").strip()
-                        try:
-                            return float(s) / 100.0
-                        except (ValueError, TypeError):
-                            return 0.0
-
                     valuation = {
                         "市盈率": 0,
                         "市净率": 0,
-                        "净资产收益率": _pct(latest.get("净资产收益率", 0)),
+                        "净资产收益率": to_percent(latest.get("净资产收益率", 0)),
                         "总市值": 0,
-                        "营业总收入": AkShareDataSource._parse_ashare_value(latest.get("营业总收入", 0)),
-                        "归属净利润": AkShareDataSource._parse_ashare_value(latest.get("净利润", 0)),
-                        "销售毛利率": _pct(latest.get("销售毛利率", 0)),
-                        "销售净利率": _pct(latest.get("销售净利率", 0)),
-                        "资产负债率": _pct(latest.get("资产负债率", 0)),
-                        "净利润同比增长率": _pct(latest.get("净利润同比增长率", 0)),
-                        "营业总收入同比增长率": _pct(latest.get("营业总收入同比增长率", 0)),
-                        "股东权益": AkShareDataSource._parse_ashare_value(latest.get("股东权益", 0)),
-                        "经营活动现金流": AkShareDataSource._parse_ashare_value(latest.get("经营活动现金净流量", 0)),
-                        "流动比率": _pct(latest.get("流动比率", 0)),
+                        "营业总收入": to_amount_yuan(latest.get("营业总收入", 0)),
+                        "归属净利润": to_amount_yuan(latest.get("净利润", 0)),
+                        "销售毛利率": to_percent(latest.get("销售毛利率", 0)),
+                        "销售净利率": to_percent(latest.get("销售净利率", 0)),
+                        "资产负债率": to_percent(latest.get("资产负债率", 0)),
+                        "净利润同比增长率": to_percent(latest.get("净利润同比增长率", 0)),
+                        "营业总收入同比增长率": to_percent(latest.get("营业总收入同比增长率", 0)),
+                        "股东权益": to_amount_yuan(latest.get("股东权益", 0)),
+                        "经营活动现金流": to_amount_yuan(latest.get("经营活动现金净流量", 0)),
+                        "流动比率": to_percent(latest.get("流动比率", 0)),
                     }
             except Exception:
                 pass
@@ -499,25 +494,12 @@ class AkShareDataSource(MarketDataSourceBase):
 
     @staticmethod
     def _parse_ashare_value(raw) -> float:
-        """解析A股数额字符串: '272.43亿' → 27243000000.0, '21.7600' → 21.76"""
-        import re
-        s = str(raw).strip()
-        if not s or s in ("False", "None", "nan", ""):
-            return 0.0
-        try:
-            return float(s)
-        except ValueError:
-            unit_map = {"亿": 1e8, "万": 1e4, "%": 1}
-            for unit, mult in unit_map.items():
-                if unit in s:
-                    try:
-                        return float(s.replace(unit, "").strip()) * mult
-                    except ValueError:
-                        return 0.0
-            try:
-                return float(re.sub(r"[^\d.\-]", "", s))
-            except ValueError:
-                return 0.0
+        """[兼容别名] 金额字段归一化为元，等价于 normalize.to_amount_yuan。
+
+        历史实现曾在此重复解析 "亿/万" 单位且误把 "%" 当作单位×1；
+        现统一收敛到 layers.connectors.normalize，避免口径分散。
+        """
+        return to_amount_yuan(raw)
 
     def _fetch_financial_ashare(self, stock_code: str) -> Dict:
         try:
@@ -539,21 +521,14 @@ class AkShareDataSource(MarketDataSourceBase):
                 if not fin_df.empty:
                     latest = fin_df.iloc[-1]
 
-                    def _pct(val) -> float:
-                        s = str(val).replace("%", "").strip()
-                        try:
-                            return float(s) / 100.0
-                        except (ValueError, TypeError):
-                            return 0.0
-
-                    roe = _pct(latest.get("净资产收益率", 0))
-                    gross_margin = _pct(latest.get("销售毛利率", 0))
-                    net_profit_margin = _pct(latest.get("销售净利率", 0))
-                    debt_ratio = _pct(latest.get("资产负债率", 0))
-                    profit_growth = _pct(latest.get("净利润同比增长率", 0))
-                    revenue_growth = _pct(latest.get("营业总收入同比增长率", 0))
-                    revenue = AkShareDataSource._parse_ashare_value(latest.get("营业总收入", 0))
-                    net_profit = AkShareDataSource._parse_ashare_value(latest.get("净利润", 0))
+                    roe = to_percent(latest.get("净资产收益率", 0))
+                    gross_margin = to_percent(latest.get("销售毛利率", 0))
+                    net_profit_margin = to_percent(latest.get("销售净利率", 0))
+                    debt_ratio = to_percent(latest.get("资产负债率", 0))
+                    profit_growth = to_percent(latest.get("净利润同比增长率", 0))
+                    revenue_growth = to_percent(latest.get("营业总收入同比增长率", 0))
+                    revenue = to_amount_yuan(latest.get("营业总收入", 0))
+                    net_profit = to_amount_yuan(latest.get("净利润", 0))
             except Exception:
                 pass
 

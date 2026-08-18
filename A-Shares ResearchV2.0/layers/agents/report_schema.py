@@ -130,6 +130,14 @@ def _extract_json(text: str) -> Optional[Dict]:
     return None
 
 
+def extract_json(text: str) -> Optional[Dict]:
+    """公开 JSON 提取入口：兼容 ```json 代码块、裸 {..}、加粗 **{..}** 等常见 LLM 输出格式。
+
+    供分析 Agent / 辩论引擎等复用，避免各处重复实现易错的 JSON 截取逻辑。
+    """
+    return _extract_json(text)
+
+
 def _fallback_text_report(text: str, dimension: str) -> AgentReport:
     report = _empty_report(dimension, "")
     report.parse_error = True

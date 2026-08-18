@@ -4,8 +4,8 @@ import logging
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional
 
-from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
-from layers.agents.report_schema import AgentReport, parse_json_report
+from config.llm_config import DEFAULT_MODEL, chat_completion
+from layers.agents.report_schema import AgentReport, extract_json
 
 logger = logging.getLogger("DebateEngine")
 
@@ -62,7 +62,6 @@ def cross_review(
     """
     Phase 2: Agent A 审阅 Agent B 的初版报告，找出潜在矛盾
     """
-    client = get_llm_client(model_name)
     reviewer_label = DIM_LABELS.get(reviewer_dim, reviewer_dim)
     target_label = DIM_LABELS.get(target_report.dimension, target_report.dimension)
 
@@ -90,49 +89,30 @@ def cross_review(
 }}"""
 
     try:
-        completion = client.chat.completions.create(
-            model=get_model_id(model_name),
+        raw = chat_completion(
+            model_name=model_name,
             messages=[
                 {"role": "system", "content": "你是一位严谨的交叉审阅分析师。请客观审视报告，找出潜在逻辑矛盾，不要怀疑自己的专业判断。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=LLM_TEMPERATURE,
             max_tokens=REVIEW_MAX_TOKENS,
+            task_tag="Debate:review",
         )
-        raw = completion.choices[0].message.content.strip()
 
-        for prefix, suffix in [("{", "}"), ("```json\n", "\n```"), ("```json", "```"), ("```\n", "\n```")]:
-            if prefix == "{":
-                start = raw.find("{")
-                end = raw.rfind("}")
-                if start != -1 and end > start:
-                    try:
-                        obj = json.loads(raw[start:end + 1])
-                        return ReviewOpinion(
-                            reviewer_dim=reviewer_dim,
-                            target_dim=target_report.dimension,
-                            is_contradiction=obj.get("is_contradiction", False),
-                            contradiction_detail=obj.get("contradiction_detail", ""),
-                            suggested_revision=obj.get("suggested_revision", ""),
-                            agree_points=obj.get("agree_points", ""),
-                        )
-                    except json.JSONDecodeError:
-                        pass
-            else:
-                if raw.startswith(prefix) and raw.endswith(suffix):
-                    inner = raw[len(prefix):-len(suffix)].strip()
-                    try:
-                        obj = json.loads(inner)
-                        return ReviewOpinion(
-                            reviewer_dim=reviewer_dim,
-                            target_dim=target_report.dimension,
-                            is_contradiction=obj.get("is_contradiction", False),
-                            contradiction_detail=obj.get("contradiction_detail", ""),
-                            suggested_revision=obj.get("suggested_revision", ""),
-                            agree_points=obj.get("agree_points", ""),
-                        )
-                    except json.JSONDecodeError:
-                        pass
+        obj = extract_json(raw)
+        if obj is not None:
+            try:
+                return ReviewOpinion(
+                    reviewer_dim=reviewer_dim,
+                    target_dim=target_report.dimension,
+                    is_contradiction=bool(obj.get("is_contradiction", False)),
+                    contradiction_detail=obj.get("contradiction_detail", ""),
+                    suggested_revision=obj.get("suggested_revision", ""),
+                    agree_points=obj.get("agree_points", ""),
+                )
+            except Exception:
+                pass
 
         return ReviewOpinion(
             reviewer_dim=reviewer_dim, target_dim=target_report.dimension,
@@ -160,7 +140,6 @@ def revise_report(
     Phase 3: Agent 收到审阅意见后，决定修改评分 or 坚持原判
     返回修订后的 AgentReport + 修订理由
     """
-    client = get_llm_client(model_name)
     label = DIM_LABELS.get(dimension, dimension)
     reviewer_label = DIM_LABELS.get(review_opinion.reviewer_dim, review_opinion.reviewer_dim)
 
@@ -212,87 +191,49 @@ def revise_report(
 }}"""
 
     try:
-        completion = client.chat.completions.create(
-            model=get_model_id(model_name),
+        raw_text = chat_completion(
+            model_name=model_name,
             messages=[
                 {"role": "system", "content": "你是一位严谨的分析师。请虚心听取跨维度审阅意见，如果对方有道理就修改，如果没有道理就据理反驳。不要为了妥协而妥协。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=LLM_TEMPERATURE,
             max_tokens=REVISE_MAX_TOKENS,
+            task_tag="Debate:revise",
         )
-        raw_text = completion.choices[0].message.content.strip()
 
-        for prefix, suffix in [("{", "}"), ("```json\n", "\n```"), ("```json", "```"), ("```\n", "\n```")]:
-            if prefix == "{":
-                start = raw_text.find("{")
-                end = raw_text.rfind("}")
-                if start != -1 and end > start:
-                    try:
-                        obj = json.loads(raw_text[start:end + 1])
-                        changed = obj.get("changed", False)
-                        revised_score = _clamp(obj.get("overall_score", original_report.overall_score), 0, 100)
-                        revised_grade = obj.get("grade", original_report.grade)
-                        reason = obj.get("reason", "")
+        obj = extract_json(raw_text)
+        if obj is not None:
+            try:
+                changed = bool(obj.get("changed", False))
+                revised_score = _clamp(obj.get("overall_score", original_report.overall_score), 0, 100)
+                revised_grade = obj.get("grade", original_report.grade)
+                reason = obj.get("reason", "")
 
-                        revised = AgentReport(
-                            dimension=dimension,
-                            overall_score=revised_score if changed else original_report.overall_score,
-                            grade=revised_grade if changed else original_report.grade,
-                            confidence=original_report.confidence,
-                            thesis=obj.get("thesis", original_report.thesis) if changed else original_report.thesis,
-                            key_signals=obj.get("key_signals", original_report.key_signals) if changed else original_report.key_signals,
-                            risk_factors=obj.get("risk_factors", original_report.risk_factors) if changed else original_report.risk_factors,
-                            recommendation=obj.get("recommendation", original_report.recommendation) if changed else original_report.recommendation,
-                            supporting_data=original_report.supporting_data,
-                            raw_text=raw_text,
-                        )
-                        return RevisionResult(
-                            dimension=dimension,
-                            original_score=original_report.overall_score,
-                            original_grade=original_report.grade,
-                            revised_score=revised.overall_score,
-                            revised_grade=revised.grade,
-                            changed=changed,
-                            reason=reason,
-                            revised_report=revised,
-                        )
-                    except json.JSONDecodeError:
-                        pass
-            else:
-                if raw_text.startswith(prefix) and raw_text.endswith(suffix):
-                    inner = raw_text[len(prefix):-len(suffix)].strip()
-                    try:
-                        obj = json.loads(inner)
-                        changed = obj.get("changed", False)
-                        revised_score = _clamp(obj.get("overall_score", original_report.overall_score), 0, 100)
-                        revised_grade = obj.get("grade", original_report.grade)
-                        reason = obj.get("reason", "")
-
-                        revised = AgentReport(
-                            dimension=dimension,
-                            overall_score=revised_score if changed else original_report.overall_score,
-                            grade=revised_grade if changed else original_report.grade,
-                            confidence=original_report.confidence,
-                            thesis=obj.get("thesis", original_report.thesis) if changed else original_report.thesis,
-                            key_signals=obj.get("key_signals", original_report.key_signals) if changed else original_report.key_signals,
-                            risk_factors=obj.get("risk_factors", original_report.risk_factors) if changed else original_report.risk_factors,
-                            recommendation=obj.get("recommendation", original_report.recommendation) if changed else original_report.recommendation,
-                            supporting_data=original_report.supporting_data,
-                            raw_text=raw_text,
-                        )
-                        return RevisionResult(
-                            dimension=dimension,
-                            original_score=original_report.overall_score,
-                            original_grade=original_report.grade,
-                            revised_score=revised.overall_score,
-                            revised_grade=revised.grade,
-                            changed=changed,
-                            reason=reason,
-                            revised_report=revised,
-                        )
-                    except json.JSONDecodeError:
-                        pass
+                revised = AgentReport(
+                    dimension=dimension,
+                    overall_score=revised_score if changed else original_report.overall_score,
+                    grade=revised_grade if changed else original_report.grade,
+                    confidence=original_report.confidence,
+                    thesis=obj.get("thesis", original_report.thesis) if changed else original_report.thesis,
+                    key_signals=obj.get("key_signals", original_report.key_signals) if changed else original_report.key_signals,
+                    risk_factors=obj.get("risk_factors", original_report.risk_factors) if changed else original_report.risk_factors,
+                    recommendation=obj.get("recommendation", original_report.recommendation) if changed else original_report.recommendation,
+                    supporting_data=original_report.supporting_data,
+                    raw_text=raw_text,
+                )
+                return RevisionResult(
+                    dimension=dimension,
+                    original_score=original_report.overall_score,
+                    original_grade=original_report.grade,
+                    revised_score=revised.overall_score,
+                    revised_grade=revised.grade,
+                    changed=changed,
+                    reason=reason,
+                    revised_report=revised,
+                )
+            except Exception:
+                pass
 
         logger.warning(f"[Debate] 修订JSON解析失败 ({dimension})，保留原报告")
         return RevisionResult(

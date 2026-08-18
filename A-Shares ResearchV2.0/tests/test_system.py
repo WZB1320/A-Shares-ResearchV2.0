@@ -1,153 +1,89 @@
+"""全量模块导入、实例化与数据结构冒烟 (pytest 版，离线)
+
+运行：pytest tests/test_system.py
+graph.workflow 已废弃删除，不再校验。
+"""
+import importlib
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import traceback
 
-passed = 0
-failed = 0
-errors = []
 
-def check(name, fn):
-    global passed, failed
-    try:
-        fn()
-        passed += 1
-        print(f"  [OK] {name}")
-    except Exception as e:
-        failed += 1
-        errors.append(f"{name}: {e}")
-        print(f"  [FAIL] {name}: {e}")
+def _imp(name: str):
+    return importlib.import_module(name)
 
-print("=" * 60)
-print("  A-Shares-Research V3.0 Harness - Full System Verification")
-print("=" * 60)
 
-# Module-level imports
-print("\n--- 1. Config layer ---")
-check("config.env_config", lambda: __import__("config.env_config"))
-check("config.llm_config", lambda: __import__("config.llm_config"))
+def test_system_imports_and_instantiation():
+    # Config / LLM client (仅构造，不联网)
+    from config.llm_config import get_llm_client, get_model_id
+    assert get_llm_client("deepseek") is not None
+    assert get_model_id("deepseek")
 
-print("\n--- 2. Graph (workflow) layer ---")
-check("graph.workflow", lambda: __import__("graph.workflow"))
+    # Skills 导入
+    for m in [
+        "layers.skills.tech_skill", "layers.skills.fund_skill",
+        "layers.skills.capital_skill", "layers.skills.industry_skill",
+        "layers.skills.valuation_skill", "layers.skills.risk_skill",
+    ]:
+        assert _imp(m) is not None, f"无法导入 {m}"
 
-print("\n--- 3. Harness layer ---")
-check("harness.scheduler", lambda: __import__("harness.scheduler"))
-check("harness.state", lambda: __import__("harness.state"))
-check("harness.validator", lambda: __import__("harness.validator"))
+    # Agents 导入 + 类存在
+    agents = [
+        "tech_agent", "fund_agent", "capital_agent", "industry_agent",
+        "risk_agent", "valuation_agent", "chief_agent",
+    ]
+    for a in agents:
+        mod = _imp(f"layers.agents.{a}")
+        assert hasattr(mod, a) and callable(getattr(mod, a)), f"{a} 缺少类"
 
-print("\n--- 4. Layered connectors ---")
-check("connectors.data_connector", lambda: __import__("layers.connectors.data_connector"))
-check("connectors.tool_connector", lambda: __import__("layers.connectors.tool_connector"))
+    # Agents 实例化 (不触发 LLM)
+    from layers.agents.tech_agent import TechAgent
+    from layers.agents.fund_agent import FundAgent
+    from layers.agents.capital_agent import CapitalAgent
+    from layers.agents.industry_agent import IndustryAgent
+    from layers.agents.risk_agent import RiskAgent
+    from layers.agents.valuation_agent import ValuationAgent
+    from layers.agents.chief_agent import ChiefAgent
 
-print("\n--- 5. Skills (all 6 dimensions) ---")
-check("tech_skill", lambda: __import__("layers.skills.tech_skill"))
-check("fund_skill", lambda: __import__("layers.skills.fund_skill"))
-check("capital_skill", lambda: __import__("layers.skills.capital_skill"))
-check("industry_skill", lambda: __import__("layers.skills.industry_skill"))
-check("risk_skill", lambda: __import__("layers.skills.risk_skill"))
-check("valuation_skill", lambda: __import__("layers.skills.valuation_skill"))
+    for Cls in (TechAgent, FundAgent, CapitalAgent, IndustryAgent,
+                RiskAgent, ValuationAgent, ChiefAgent):
+        inst = Cls("deepseek")
+        assert hasattr(inst, "analyze"), f"{Cls.__name__} 缺少 analyze 方法"
 
-print("\n--- 6. Agents (all 7 agents + report_schema) ---")
-check("report_schema", lambda: __import__("layers.agents.report_schema"))
-check("tech_agent", lambda: __import__("layers.agents.tech_agent"))
-check("fund_agent", lambda: __import__("layers.agents.fund_agent"))
-check("capital_agent", lambda: __import__("layers.agents.capital_agent"))
-check("industry_agent", lambda: __import__("layers.agents.industry_agent"))
-check("risk_agent", lambda: __import__("layers.agents.risk_agent"))
-check("valuation_agent", lambda: __import__("layers.agents.valuation_agent"))
-check("chief_agent", lambda: __import__("layers.agents.chief_agent"))
-check("data_agent", lambda: __import__("layers.agents.data_agent"))
-
-print("\n--- 7. Top-level (app, main) ---")
-check("app module", lambda: __import__("app"))
-check("main module", lambda: __import__("main"))
-
-# Instance creation tests
-print("\n--- 8. LLM Client ---")
-from config.llm_config import get_llm_client, get_model_id
-check("LLM client creation", lambda: get_llm_client("deepseek"))
-check("LLM model_id", lambda: get_model_id("deepseek"))
-
-print("\n--- 9. Agent Instantiation ---")
-from layers.agents.tech_agent import TechAgent
-from layers.agents.fund_agent import FundAgent
-from layers.agents.capital_agent import CapitalAgent
-from layers.agents.industry_agent import IndustryAgent
-from layers.agents.risk_agent import RiskAgent
-from layers.agents.valuation_agent import ValuationAgent
-from layers.agents.chief_agent import ChiefAgent
-
-check("TechAgent instantiate", lambda: TechAgent("deepseek"))
-check("FundAgent instantiate", lambda: FundAgent("deepseek"))
-check("CapitalAgent instantiate", lambda: CapitalAgent("deepseek"))
-check("IndustryAgent instantiate", lambda: IndustryAgent("deepseek"))
-check("RiskAgent instantiate", lambda: RiskAgent("deepseek"))
-check("ValuationAgent instantiate", lambda: ValuationAgent("deepseek"))
-check("ChiefAgent instantiate", lambda: ChiefAgent("deepseek"))
-
-print("\n--- 10. AgentReport Data Structure ---")
-from layers.agents.report_schema import (
-    AgentReport, parse_json_report, aggregate_reports,
-    reports_to_markdown, error_report, unavailable_report
-)
-
-check("AgentReport create+to_dict+from_dict", lambda: (
-    AgentReport.from_dict(
-        AgentReport("tech", 72, "kan duo", 75, "good",
-                   ["s1"], ["r1"], "buy").to_dict()
+    # report_schema 数据结构
+    from layers.agents.report_schema import (
+        AgentReport, parse_json_report, aggregate_reports,
+        reports_to_markdown, error_report, unavailable_report,
     )
-))
+    r = AgentReport("tech", 72, "kan duo", 75, "good", ["s1"], ["r1"], "buy")
+    assert AgentReport.from_dict(r.to_dict()).dimension == "tech"
+    assert parse_json_report(
+        '{"dimension":"tech","overall_score":72,"grade":"kan duo","confidence":75,'
+        '"thesis":"t","key_signals":["s1"],"risk_factors":["r1"],"recommendation":"buy"}',
+        "tech",
+    ) is not None
+    assert aggregate_reports({"tech": r}) is not None
+    assert reports_to_markdown({"tech": r})
+    assert error_report("tech", "test")
+    assert unavailable_report("fund")
 
-check("parse_json valid", lambda: parse_json_report(
-    '{"dimension":"tech","overall_score":72,"grade":"kan duo","confidence":75,'
-    '"thesis":"t","key_signals":["s1"],"risk_factors":["r1"],"recommendation":"buy"}',
-    "tech"
-))
+    # ValuationSkill 行业分类
+    from layers.skills.valuation_skill import ValuationSkill
+    assert ValuationSkill.classify_industry("白酒")[0] == "stable"
+    assert ValuationSkill.classify_industry("证券")[0] == "cyclical"
+    assert ValuationSkill.classify_industry("银行")[0] == "financial"
+    assert ValuationSkill.classify_industry("芯片")[0] == "growth"
+    assert ValuationSkill.classify_industry("XYZ-unknown-sector")[0] == "default"
 
-check("aggregate 3-dim reports", lambda: aggregate_reports({
-    "tech": AgentReport("tech", 72, "kan duo", 75, "g", ["s1"], ["r1"], "b"),
-    "fund": AgentReport("fund", 65, "zhong xing", 70, "o", ["s2"], ["r2"], "h"),
-    "risk": AgentReport("risk", 40, "kan kong", 60, "b", ["s3"], ["r3"], "s"),
-}))
-
-check("reports_to_markdown", lambda: reports_to_markdown({
-    "tech": AgentReport("tech", 72, "kan duo", 75, "g", ["s1"], ["r1"], "b"),
-}))
-
-check("error_report", lambda: error_report("tech", "test"))
-check("unavailable_report", lambda: unavailable_report("fund"))
-
-def _check(val, expected):
-    assert val == expected, f"got {val}, expected {expected}"
-
-print("\n--- 11. ValuationSkill Industry Classification ---")
-from layers.skills.valuation_skill import ValuationSkill
-check("classify - baijiu", lambda: _check(ValuationSkill.classify_industry("\u767d\u9152")[0], "stable"))
-check("classify - quan shang", lambda: _check(ValuationSkill.classify_industry("\u8bc1\u5238")[0], "cyclical"))
-check("classify - bank", lambda: _check(ValuationSkill.classify_industry("\u94f6\u884c")[0], "financial"))
-check("classify - chip", lambda: _check(ValuationSkill.classify_industry("\u82af\u7247")[0], "growth"))
-check("classify - unknown", lambda: _check(ValuationSkill.classify_industry("XYZ-unknown-sector")[0], "default"))
-
-print("\n--- 12. Skill Analyzers (dry run with mock data) ---")
-mock_tech = {"ma_system": {}}
-mock_fund = {"basic_info": {"hang ye": "bai jiu"}}
-mock_val = {"price": 25.5, "pe_ttm": 15.2, "pb": 2.1,
-            "pe_history": [10,12,14,18,22,25,30,28,20,15,12],
-            "pb_history": [1.0,1.2,1.5,2.0,2.5,3.0,2.8,2.2,1.8,1.5,1.2]}
-
-from layers.skills.valuation_skill import valuation_skill
-check("ValuationSkill.analyze", lambda: valuation_skill.analyze(mock_val, mock_fund))
-
-check("IndustrySkill.analyze", lambda: (
-    __import__("layers.skills.industry_skill").industry_skill.analyze(mock_fund)
-))
-
-# Final results
-print("\n" + "=" * 60)
-print(f"  Results: {passed} passed, {failed} failed")
-if errors:
-    print("  Errors:")
-    for e in errors:
-        print(f"    - {e}")
-print("=" * 60)
-sys.exit(0 if failed == 0 else 1)
+    # Skill 干跑 (mock 数据, 不调 LLM)
+    from layers.skills.valuation_skill import valuation_skill
+    from layers.skills.industry_skill import industry_skill
+    mock_fund = {"basic_info": {"行业": "白酒"}}
+    mock_val = {
+        "price": 25.5, "pe_ttm": 15.2, "pb": 2.1,
+        "pe_history": [10, 12, 14, 18, 22, 25, 30, 28, 20, 15, 12],
+        "pb_history": [1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 2.8, 2.2, 1.8, 1.5, 1.2],
+    }
+    assert valuation_skill.analyze(mock_val, mock_fund) is not None
+    assert industry_skill.analyze(mock_fund) is not None

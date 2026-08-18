@@ -4,7 +4,7 @@ import time
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Callable
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -207,6 +207,104 @@ class BacktestEngine:
         self.results.extend(results)
         logger.info(f"[Backtest] 回溯测试完成: {len(results)} 样本")
         return results
+
+    # ───────────────────────────────────────────────────────────
+    #  真实数据回测：基于 analysis_records 历史分析 + 真实未来价格
+    # ───────────────────────────────────────────────────────────
+
+    def run_from_records(
+        self,
+        records: List[Dict[str, Any]],
+        price_fetcher: Callable[[str, str, int], Optional[Dict[str, float]]],
+        forecast_days: int = 60,
+    ) -> List["BacktestResult"]:
+        """用历史分析与真实未来价格验证方向判断（分析→N日验证闭环）。
+
+        Args:
+            records: 每条含 stock_code, analyzed_at, overall_grade, overall_score,
+                     dimension_scores(dict), price_at_analysis(float)。
+                     通常由 db.get_analysis_records_for_backtest() 提供。
+            price_fetcher: 可注入的真实价格源，签名
+                     (stock_code, analysis_date, horizon_days) ->
+                     Optional[{"price_at_future": float, "benchmark_return_pct": float}]。
+                     返回 None 表示该股票/区间无真实价格，自动跳过。
+            forecast_days: 展望期（天）。
+        Returns:
+            本次评估生成的 BacktestResult 列表（同时累积进 self.results）。
+        """
+        results = []
+        for rec in records:
+            snapshot = self._snapshot_from_record(rec, forecast_days)
+            if snapshot is None:
+                continue
+            future = price_fetcher(snapshot.stock_code, snapshot.analysis_date, forecast_days)
+            if not future:
+                logger.debug(
+                    f"[Backtest] 跳过(无真实价格): {snapshot.stock_code} @ {snapshot.analysis_date}"
+                )
+                continue
+            outcome = self._outcome_from_future(snapshot, future, forecast_days)
+            result = self._evaluate_single(snapshot, outcome)
+            results.append(result)
+        self.results.extend(results)
+        logger.info(f"[Backtest] 真实数据回溯完成: {len(results)} 样本(展望{forecast_days}天)")
+        return results
+
+    def _snapshot_from_record(
+        self, rec: Dict[str, Any], forecast_days: int
+    ) -> Optional["AnalysisSnapshot"]:
+        grade = rec.get("overall_grade") or "中性"
+        score = rec.get("overall_score") or 50
+        dim_scores = rec.get("dimension_scores") or {}
+        analysis_date = str(rec.get("analysis_date") or rec.get("analyzed_at") or "")[:10]
+        if not analysis_date:
+            return None
+        snapshot = AnalysisSnapshot(
+            stock_code=rec.get("stock_code", ""),
+            analysis_date=analysis_date,
+            forecast_horizon_days=forecast_days,
+            overall_grade=grade,
+            overall_score=score,
+            dimension_scores={k: v for k, v in dim_scores.items()
+                              if isinstance(v, (int, float))},
+        )
+        # 用维度分数回填子维度（保持维度归因可用）
+        for dim in ("tech", "fund", "valuation"):
+            sc = dim_scores.get(dim)
+            if isinstance(sc, (int, float)):
+                setattr(snapshot, f"{dim}_score", sc)
+                setattr(snapshot, f"{dim}_grade", _score_to_grade(sc))
+                setattr(snapshot, f"{dim}_confidence", 60)
+        # 缓存价格基准（非 dataclass 字段，供 outcome 计算使用）
+        snapshot.price_at_analysis = rec.get("price_at_analysis") or 0.0
+        return snapshot
+
+    def _outcome_from_future(
+        self, snapshot: "AnalysisSnapshot", future: Dict[str, float], forecast_days: int
+    ) -> "OutcomeData":
+        analysis_dt = datetime.strptime(snapshot.analysis_date, "%Y-%m-%d")
+        future_dt = analysis_dt + timedelta(days=forecast_days)
+        price_at = float(getattr(snapshot, "price_at_analysis", 0.0) or 0.0)
+        price_future = float(future.get("price_at_future", 0.0) or 0.0)
+        benchmark_return = float(future.get("benchmark_return_pct", 0.0) or 0.0)
+        return_pct = ((price_future - price_at) / price_at * 100) if (price_at and price_future) else 0.0
+        excess = return_pct - benchmark_return
+        direction = "涨" if return_pct > 2 else ("跌" if return_pct < -2 else "平")
+        return OutcomeData(
+            stock_code=snapshot.stock_code,
+            analysis_date=snapshot.analysis_date,
+            future_date=future_dt.strftime("%Y-%m-%d"),
+            forecast_horizon_days=forecast_days,
+            price_at_analysis=price_at,
+            price_at_future=price_future,
+            return_pct=return_pct,
+            benchmark_return_pct=benchmark_return,
+            excess_return_pct=excess,
+            max_drawdown_pct=abs(min(return_pct, 0)),
+            volatility_pct=abs(return_pct) * 0.6,
+            direction=direction,
+            data_available=True,
+        )
 
     def _build_snapshot(
         self,

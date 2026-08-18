@@ -1,46 +1,46 @@
-"""多市场数据源测试"""
+"""多市场数据源测试 (需要网络/akshare, 默认跳过)
+
+运行（含网络）：pytest -m integration tests/test_market_data.py
+"""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import logging
-logging.basicConfig(level=logging.WARNING)
-
+import pytest
 from layers.connectors import DataConnector
 
-# ── 港股测试 ──
-print('=== 港股 00700 (腾讯) ===')
-dc = DataConnector('00700')
-basic = dc.fetch_basic_info()
-print(f"  basic_info: {basic.get('名称', '?')}")
 
-tech = dc.fetch_tech_data()
-print(f"  tech_data: {len(tech)} rows, cols: {list(tech.columns)[:8]}...")
+@pytest.mark.integration
+def test_hk_data_fetch():
+    dc = DataConnector("00700")
+    basic = dc.fetch_basic_info()
+    assert isinstance(basic, dict) and basic.get("名称"), "港股 basic_info 异常"
 
-val = dc.fetch_valuation_data()
-print(f"  valuation: PE={val.get('pe_ttm')}, PB={val.get('pb')}")
+    tech = dc.fetch_tech_data()
+    assert tech is not None and len(tech) > 0, "港股 tech_data 为空"
 
-fin = dc.fetch_financial_data()
-print(f"  financial: ROE={fin.get('roe')}")
+    val = dc.fetch_valuation_data()
+    assert isinstance(val, dict), "港股 valuation 异常"
 
-all_data = dc.fetch_all()
-print(f"  fetch_all keys: {list(all_data.keys())}")
+    fin = dc.fetch_financial_data()
+    assert isinstance(fin, dict), "港股 financial 异常"
 
-# ── 美股测试 ──
-print()
-print('=== 美股 BABA (阿里巴巴) ===')
-dc2 = DataConnector('BABA')
-basic2 = dc2.fetch_basic_info()
-print(f"  basic_info: {basic2.get('名称', '?')}")
+    all_data = dc.fetch_all()
+    assert isinstance(all_data, dict) and len(all_data) > 0, "fetch_all 为空"
 
-tech2 = dc2.fetch_tech_data()
-print(f"  tech_data: {len(tech2)} rows")
 
-val2 = dc2.fetch_valuation_data()
-print(f"  valuation: PE={val2.get('pe_ttm')}, PB={val2.get('pb')}")
+@pytest.mark.integration
+def test_us_data_fetch():
+    dc2 = DataConnector("BABA")
+    basic2 = dc2.fetch_basic_info()
+    assert isinstance(basic2, dict), "美股 basic_info 异常"
 
-fin2 = dc2.fetch_financial_data()
-print(f"  financial: ROE={fin2.get('roe')}, GP={fin2.get('gross_profit')}")
+    tech2 = dc2.fetch_tech_data()
+    assert tech2 is not None, "美股 tech_data 异常"
 
-print()
-print('Done - all data fetch tests passed')
+    val2 = dc2.fetch_valuation_data()
+    assert isinstance(val2, dict), "美股 valuation 异常"
+
+    fin2 = dc2.fetch_financial_data()
+    assert isinstance(fin2, dict), "美股 financial 异常"

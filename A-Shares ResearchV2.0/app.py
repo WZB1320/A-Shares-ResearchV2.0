@@ -20,7 +20,7 @@ logging.basicConfig(
 from layers.agents.chief_agent import ChiefAgent
 from db import (
     watchlist_get_all, watchlist_add, watchlist_remove,
-    watchlist_update_snapshot, cache_save, cache_get_latest
+    watchlist_update_snapshot, save_analysis, cache_get_latest
 )
 from chat_engine import chat_engine
 
@@ -68,9 +68,9 @@ def generate(request: Request, stock_code: str = Form(...),
             overall_score = result.get("overall_score", 50)
             context_text = result.get("context_text", "")
 
-            # 保存分析缓存（供对话使用）
+            # 保存分析记录（供对话使用 + 历史跟踪上下文，统一单表写入）
             try:
-                cache_save(
+                save_analysis(
                     stock_code=stock_code,
                     report_markdown=report,
                     reports=reports,
@@ -78,6 +78,11 @@ def generate(request: Request, stock_code: str = Form(...),
                     overall_grade=overall_grade,
                     overall_score=overall_score,
                     context_text=context_text,
+                    dimension_scores=result.get("dimension_scores", {}),
+                    key_conclusion=result.get("key_conclusion", ""),
+                    top_signals=result.get("top_signals", []),
+                    top_risks=result.get("top_risks", []),
+                    price_at_analysis=result.get("price_at_analysis"),
                 )
             except Exception:
                 pass
@@ -164,7 +169,20 @@ def api_watchlist_refresh():
                 score = result.get("overall_score", 50)
                 ctx = result.get("context_text", "")
 
-                cache_save(code, report, reports, chart_data, grade, score, ctx)
+                save_analysis(
+                    stock_code=code,
+                    report_markdown=report,
+                    reports=reports,
+                    chart_data=chart_data,
+                    overall_grade=grade,
+                    overall_score=score,
+                    context_text=ctx,
+                    dimension_scores=result.get("dimension_scores", {}),
+                    key_conclusion=result.get("key_conclusion", ""),
+                    top_signals=result.get("top_signals", []),
+                    top_risks=result.get("top_risks", []),
+                    price_at_analysis=result.get("price_at_analysis"),
+                )
 
                 price = None
                 if chart_data.get("kline") and chart_data["kline"].get("ohlc"):
@@ -187,6 +205,17 @@ def api_watchlist_refresh():
     except Exception as e:
         logging.getLogger("App").warning(f"[App] 自选股研报拉取失败: {e}")
 
+    # 到期分析回测验证（分析→N日验证闭环）：非阻塞，网络/数据缺失时安全跳过
+    try:
+        from layers.backtest.runner import verify_expired_analyses
+        summaries = verify_expired_analyses()
+        if summaries:
+            logging.getLogger("App").info(
+                f"[App] 到期分析回测完成: {list(summaries.keys())} 个展望期"
+            )
+    except Exception as e:
+        logging.getLogger("App").warning(f"[App] 到期分析回测失败(已跳过): {e}")
+
     return JSONResponse({"results": results, "watchlist": watchlist_get_all()})
 
 
@@ -208,7 +237,7 @@ def api_analyze(req: AnalyzeRequest):
         if isinstance(result, dict):
             # 保存缓存 + 更新自选股快照
             try:
-                cache_save(
+                save_analysis(
                     stock_code=req.stock_code,
                     report_markdown=result.get("final_report", ""),
                     reports=result.get("reports", {}),
@@ -216,6 +245,11 @@ def api_analyze(req: AnalyzeRequest):
                     overall_grade=result.get("overall_grade", ""),
                     overall_score=result.get("overall_score", 50),
                     context_text=result.get("context_text", ""),
+                    dimension_scores=result.get("dimension_scores", {}),
+                    key_conclusion=result.get("key_conclusion", ""),
+                    top_signals=result.get("top_signals", []),
+                    top_risks=result.get("top_risks", []),
+                    price_at_analysis=result.get("price_at_analysis"),
                 )
                 price = None
                 cd = result.get("chart_data", {})
@@ -252,6 +286,7 @@ class ChatRequest(BaseModel):
     stock_code: str = ""  # 可选：为空时自动从问题中提取
     messages: List[dict] = []
     new_message: str
+    session_id: str = ""  # 可选：提供后服务端按会话隔离历史上下文，避免串台
 
 
 @app.post("/api/chat")
@@ -264,8 +299,13 @@ def api_chat(req: ChatRequest):
         stock_code=req.stock_code,
         messages=req.messages,
         new_message=req.new_message,
+        session_id=req.session_id or None,
     )
-    return JSONResponse({"reply": reply, "stock_code": req.stock_code})
+    return JSONResponse({
+        "reply": reply,
+        "stock_code": req.stock_code,
+        "session_id": req.session_id,
+    })
 
 
 if __name__ == "__main__":

@@ -1,5 +1,4 @@
 import sys
-import json
 import logging
 from pathlib import Path
 from typing import Dict, TypedDict, Optional, List, Any
@@ -47,8 +46,6 @@ class HarnessStateManager:
         self.stock_code = stock_code
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.state: HarnessState = self._create_initial_state()
-        self._checkpoint_dir = Path("checkpoints")
-        self._checkpoint_dir.mkdir(exist_ok=True)
         self._log_dir = Path("logs")
         self._log_dir.mkdir(exist_ok=True)
         logger.info(f"[State] 初始化状态管理器 | stock_code={stock_code} | session_id={self.session_id}")
@@ -158,29 +155,6 @@ class HarnessStateManager:
     def set_final_report(self, report: str) -> None:
         self.state["final_report"] = report
         self.state["updated_at"] = datetime.now().isoformat()
-
-    def save_checkpoint(self) -> str:
-        checkpoint_file = self._checkpoint_dir / f"{self.session_id}.json"
-        with open(checkpoint_file, "w", encoding="utf-8") as f:
-            json.dump(self.state, f, ensure_ascii=False, indent=2, default=str)
-        logger.info(f"[State] 检查点已保存: {checkpoint_file}")
-        return str(checkpoint_file)
-
-    def load_checkpoint(self, session_id: str) -> bool:
-        checkpoint_file = self._checkpoint_dir / f"{session_id}.json"
-        if not checkpoint_file.exists():
-            logger.warning(f"[State] 检查点文件不存在: {checkpoint_file}")
-            return False
-
-        try:
-            with open(checkpoint_file, "r", encoding="utf-8") as f:
-                self.state = json.load(f)
-            self.session_id = session_id
-            logger.info(f"[State] 检查点已加载: {checkpoint_file}")
-            return True
-        except Exception as e:
-            logger.error(f"[State] 加载检查点失败: {e}")
-            return False
 
     def get_task_status(self, agent_name: str) -> Optional[str]:
         task = self.state["tasks"].get(agent_name)

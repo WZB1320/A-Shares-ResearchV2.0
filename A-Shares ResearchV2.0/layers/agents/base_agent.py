@@ -13,7 +13,7 @@ import logging
 from typing import Dict, Optional
 from abc import ABC, abstractmethod
 
-from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
+from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL, chat_completion
 from layers.connectors import DataConnector
 from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
 
@@ -71,16 +71,16 @@ class BaseAnalysisAgent(ABC):
         prompt = self._build_prompt(stock_code, signals, quality_context)
 
         try:
-            completion = self.client.chat.completions.create(
-                model=get_model_id(self.model_name),
+            raw = chat_completion(
+                model_name=self.model_name,
                 messages=[
                     {"role": "system", "content": self._system_prompt()},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=self.temperature,
-                max_tokens=self.max_tokens
+                max_tokens=self.max_tokens,
+                task_tag=self.__class__.__name__,
             )
-            raw = completion.choices[0].message.content.strip()
             report = parse_json_report(raw, self.dimension)
             logger.info(f"[{self.__class__.__name__}] 分析完成: {stock_code} | score={report.overall_score} grade={report.grade}")
             return report.to_dict()

@@ -118,6 +118,7 @@ class QualityGate:
         all_data: Dict,
         scheduler: Optional[Any] = None,
         model_name: str = "",
+        quality_context: str = "",
     ) -> Dict[str, Dict]:
         """评估报告质量，低分触发重试
 
@@ -127,6 +128,7 @@ class QualityGate:
             all_data: 完整数据（用于重试时构建 data_payload）
             scheduler: HarnessScheduler 实例（用于重试时调用 Agent）
             model_name: LLM 模型名
+            quality_context: 数据质量上下文（重试时回传给 Agent，避免丢失）
 
         Returns:
             更新后的 {agent_name: report_dict} 字典
@@ -181,6 +183,7 @@ class QualityGate:
                     all_data=all_data,
                     selected_agents=[agent_name],
                     model_name=model_name,
+                    quality_context=quality_context,
                 )
                 new_report = retry_results.get(agent_name)
                 if new_report is None:

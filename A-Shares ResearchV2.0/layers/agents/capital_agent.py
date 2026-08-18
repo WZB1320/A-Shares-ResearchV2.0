@@ -5,48 +5,38 @@ from typing import Dict, Optional
 
 logger = logging.getLogger("CapitalAgent")
 
-from config.llm_config import get_llm_client, get_model_id, DEFAULT_MODEL
+from config.llm_config import DEFAULT_MODEL
 from layers.connectors import DataConnector
-from layers.skills.capital_skill import CapitalSkill, capital_skill
-from layers.agents.report_schema import parse_json_report, error_report, unavailable_report
-from layers.agents.base_agent import QUANT_ANCHOR_RULE
-
-REPORT_MAX_TOKENS = 1200
-LLM_TEMPERATURE = 0.0
+from layers.skills.capital_skill import capital_skill
+from layers.agents.base_agent import BaseAnalysisAgent, QUANT_ANCHOR_RULE
 
 
-class CapitalAgent:
+class CapitalAgent(BaseAnalysisAgent):
+    """资金面分析 Agent"""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, data_connector: Optional[DataConnector] = None):
-        self.model_name = model_name.lower()
-        self.client = get_llm_client(self.model_name)
-        self.data_connector = data_connector
-        self.capital_skill = capital_skill
+    MAX_TOKENS = 1200
+    LLM_TEMPERATURE = 0.0
 
-    def analyze(self, stock_code: str, state: Optional[Dict] = None) -> Dict:
-        logger.info(f"[CapitalAgent] 开始机构级资金面分析: {stock_code}")
+    @property
+    def dimension(self) -> str:
+        return "capital"
 
+    def _get_data(self, state):
         capital_data = None
-        quality_context = None
         if state is not None:
             capital_data = state.get("capital_data")
-            quality_context = state.get("quality_context")
-
         if capital_data is None and self.data_connector is not None:
             capital_data = self.data_connector.fetch_capital_data()
+        return capital_data
 
-        if capital_data is None:
-            logger.warning(f"[CapitalAgent] 无资金面数据: {stock_code}")
-            return unavailable_report("capital").to_dict()
+    def _run_skill(self, data):
+        return capital_skill.analyze(data)
 
-        try:
-            signals = self.capital_skill.analyze(capital_data)
-        except Exception as e:
-            error_msg = f"资金面指标计算失败：{str(e)}"
-            logger.error(f"[CapitalAgent] {error_msg}")
-            return error_report("capital", error_msg).to_dict()
+    def _system_prompt(self) -> str:
+        return "你是一位资深券商资金面分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"
 
-        prompt = f"""你是一位资深券商资金面分析师，请基于以下资金流向分析数据，输出一份结构化的资金面研判报告。
+    def _build_prompt(self, stock_code: str, signals, quality_context: Optional[str]) -> str:
+        return f"""你是一位资深券商资金面分析师，请基于以下资金流向分析数据，输出一份结构化的资金面研判报告。
 
 {quality_context or ''}
 
@@ -87,25 +77,6 @@ Step 5: 综合以上四步骤，给出资金面综合研判
 7. 仅基于提供的数据做判断，不编造数据
 8. 只输出JSON，不要输出任何其他内容
 {QUANT_ANCHOR_RULE}"""
-
-        try:
-            completion = self.client.chat.completions.create(
-                model=get_model_id(self.model_name),
-                messages=[
-                    {"role": "system", "content": "你是一位资深券商资金面分析师。请严格输出JSON格式的结构化分析结果，不要输出任何其他内容。"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=LLM_TEMPERATURE,
-                max_tokens=REPORT_MAX_TOKENS
-            )
-            raw = completion.choices[0].message.content.strip()
-            report = parse_json_report(raw, "capital")
-            logger.info(f"[CapitalAgent] 结构化资金面分析完成: {stock_code} | score={report.overall_score} grade={report.grade}")
-            return report.to_dict()
-        except Exception as e:
-            error_msg = f"LLM调用失败：{str(e)}"
-            logger.error(f"[CapitalAgent] {error_msg}")
-            return error_report("capital", error_msg).to_dict()
 
     @staticmethod
     def _build_data_context(stock_code: str, signals) -> str:
