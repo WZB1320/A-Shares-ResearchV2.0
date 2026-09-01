@@ -12,6 +12,7 @@
 确保下游 6 个分析 Agent 零改动。
 """
 import logging
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -36,11 +37,17 @@ def _compute_tech_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in df.columns:
         return df
 
-    # 标准化列名
+    # 标准化列名（含 akshare 中文列：stock_zh_a_hist / stock_us_hist 返回
+    # 日期/开盘/收盘/最高/最低/成交量/成交额，缺失映射会导致 OHLC 被补 0）
     df.rename(columns={
-        "trade_date": "date", "Date": "date",
-        "Open": "open", "High": "high", "Low": "low",
-        "Close": "close", "Volume": "volume",
+        "trade_date": "date", "Date": "date", "日期": "date",
+        "Open": "open", "开盘": "open",
+        "High": "high", "最高": "high",
+        "Low": "low", "最低": "low",
+        "Close": "close", "收盘": "close",
+        "Volume": "volume", "成交量": "volume",
+        "Amount": "amount", "成交额": "amount",
+        "换手率": "turnover",
         "Adj Close": "adj_close",
     }, inplace=True, errors="ignore")
 
@@ -171,9 +178,10 @@ class AkShareDataSource(MarketDataSourceBase):
 
     @staticmethod
     def _is_ashare_stock(stock_code: str) -> bool:
-        """判断是否为A股（sh/sz 前缀 或 6位纯数字）"""
+        """判断是否为A股（sh/sz+6位数字前缀，或 6位纯数字/带.SH/.SZ后缀）"""
         code = stock_code.strip().upper()
-        if code.startswith(("SH", "SZ")):
+        # 前缀必须后跟6位数字，避免 SHOP/SHEL 等美股 ticker 命中 "SH" 前缀被误判
+        if re.fullmatch(r"(SH|SZ)\d{6}", code):
             return True
         clean = code.replace(".", "")
         if clean.isdigit() and len(clean) == 6:
@@ -195,30 +203,23 @@ class AkShareDataSource(MarketDataSourceBase):
 
     @staticmethod
     def _clean_ashare_code(stock_code: str) -> str:
-        """A股代码标准化: sh600519 或 600519 → 600519"""
+        """A股代码标准化: sh600519 / 600519 / 600519.SH → 600519"""
         code = stock_code.strip().upper()
-        code = code.replace("SH", "").replace("SZ", "").replace(".SH", "").replace(".SZ", "")
+        # 必须先去掉 .SH/.SZ 后缀再删 SH/SZ 前缀，否则 "600519.SH" 会先被
+        # replace("SH","") 吃掉后缀变成 "600519."
+        code = code.replace(".SH", "").replace(".SZ", "")
+        if code.startswith(("SH", "SZ")):
+            code = code[2:]
         return code.zfill(6) if code.isdigit() else code
 
     @staticmethod
     def _find_us_symbol(stock_code: str) -> Optional[str]:
-        """查找美股在 AkShare 中的 symbol（如 105.BABA 或 106.BABA）"""
-        import akshare as ak
+        """查找美股在 AkShare 中的 symbol（如 105.BABA 或 106.BABA）
+
+        依次尝试各交易所前缀构造 symbol，由调用方逐个请求验证有效性。
+        """
         ticker = AkShareDataSource._clean_code(stock_code).upper()
-
-        # 尝试从实时行情中查找
-        try:
-            spot = ak.stock_us_spot_em()
-            row = spot[spot["代码"] == ticker]
-            if not row.empty:
-                code = str(row.iloc[0].get("代码", ticker))
-                # 自动加上前缀
-                for prefix in AkShareDataSource.US_EXCHANGE_PREFIXES:
-                    return f"{prefix}.{ticker}"
-        except Exception:
-            pass
-
-        # 依次尝试 NYSE 和 NASDAQ 前缀
+        # 依次返回带前缀 symbol（由调用方请求验证，首个无数据则尝试下一个）
         for prefix in AkShareDataSource.US_EXCHANGE_PREFIXES:
             return f"{prefix}.{ticker}"
 
@@ -376,6 +377,7 @@ class AkShareDataSource(MarketDataSourceBase):
 
     def _fetch_fundamental_us(self, stock_code: str) -> Dict:
         """美股基本面：从 spot 和 financial 接口获取"""
+        basic_info = {}  # 预初始化，防止 except 分支引用未绑定变量
         try:
             import akshare as ak
             ticker = self._clean_code(stock_code).upper()
@@ -634,12 +636,19 @@ class AkShareDataSource(MarketDataSourceBase):
         try:
             fund = self.fetch_fundamental_data(stock_code)
             val = fund.get("valuation", {})
+            basic = fund.get("basic_info", {}) or {}
+            # price 必须是每股股价（来自行情"最新价"），不得用"总市值"冒充
+            price = basic.get("最新价") or None
+            pe = val.get("市盈率") or None
+            pb = val.get("市净率") or None
             return {
-                "price": val.get("总市值", 0),
-                "pe_ttm": val.get("市盈率", 0),
-                "pb": val.get("市净率", 0),
+                "price": price,
+                # 0 表示缺失而非真实估值，转 None 防止下游把 0 当"极低估值"加分
+                "pe_ttm": pe,
+                "pb": pb,
                 "pe_history": [], "pb_history": [],
-                "pe_10_avg": val.get("市盈率", 0),
+                # 无历史数据时不伪造均值
+                "pe_10_avg": None,
             }
         except Exception as e:
             logger.warning(f"[AkShare] valuation_data 获取失败: {e}")
@@ -654,9 +663,9 @@ class AkShareDataSource(MarketDataSourceBase):
             fund = self.fetch_fundamental_data(stock_code)
             val = fund.get("valuation", {})
             return {
-                "roe": val.get("净资产收益率", 0),
-                "gross_profit": 0,
-                "net_profit": "从AkShare获取",
+                "roe": val.get("净资产收益率") or None,
+                "gross_profit": None,
+                "net_profit": None,
             }
         except Exception as e:
             logger.warning(f"[AkShare] financial_data 获取失败: {e}")
@@ -861,13 +870,18 @@ class YahooDataSource(MarketDataSourceBase):
         try:
             fund = self.fetch_fundamental_data(stock_code)
             val = fund.get("valuation", {})
+            basic = fund.get("basic_info", {}) or {}
+            # price 必须是每股股价（行情"最新价"），不得用总市值/企业价值冒充
+            price = basic.get("最新价") or None
+            pe = val.get("市盈率") or None
+            pb = val.get("市净率") or None
             return {
-                "price": val.get("总市值", 0),
-                "pe_ttm": val.get("市盈率", 0),
-                "pb": val.get("市净率", 0),
+                "price": price,
+                "pe_ttm": pe,
+                "pb": pb,
                 "pe_history": [],
                 "pb_history": [],
-                "pe_10_avg": val.get("市盈率", 0),
+                "pe_10_avg": None,
             }
         except Exception as e:
             logger.warning(f"[Yahoo] valuation_data 获取失败({stock_code}): {e}")
@@ -889,8 +903,11 @@ class YahooDataSource(MarketDataSourceBase):
             fin_data = quote.get("financialData", {}) or {}
             return {
                 "roe": float(_raw(fin_data, "returnOnEquity") or 0) * 100,
-                "gross_profit": float(_raw(fin_data, "grossMargins") or 0) * 100,
-                "net_profit": float(_raw(fin_data, "totalRevenue") or 0),
+                # 毛利率（%），不是毛利额
+                "gross_profit_margin": float(_raw(fin_data, "grossMargins") or 0) * 100,
+                # 营业收入（元）——此前误标为 net_profit
+                "revenue": float(_raw(fin_data, "totalRevenue") or 0),
+                "net_margin": float(_raw(fin_data, "profitMargins") or 0) * 100,
             }
         except Exception as e:
             logger.warning(f"[Yahoo] financial_data 获取失败({stock_code}): {e}")
@@ -962,7 +979,8 @@ class FinnhubDataSource(MarketDataSourceBase):
                 "市盈率": metric.get("peBasicExclExtraTTM", metric.get("peTTM", 0)) or 0,
                 "市净率": metric.get("pbQuarterly", metric.get("pbAnnual", 0)) or 0,
                 "股息率": metric.get("dividendYieldIndicatedAnnual", 0) or 0,
-                "净资产收益率": (metric.get("roeTTM", metric.get("roeRfy", 0)) or 0) * 100,
+                # Finnhub 的 roeTTM 已是百分数（10.22=10.22%），不得再乘100
+                "净资产收益率": metric.get("roeTTM", metric.get("roeRfy", 0)) or 0,
                 "总市值": basic_info.get("市值", 0),
             }
 
@@ -1035,7 +1053,6 @@ class FinnhubDataSource(MarketDataSourceBase):
                 "roe": round(float(metric.get("roeTTM", 0) or 0), 2),
                 "gross_profit": round(float(metric.get("grossMarginTTM", 0) or 0), 2),
                 "net_profit_margin": round(float(metric.get("netProfitMarginTTM", 0) or 0), 2),
-                "net_profit": f"{round(float(metric.get('netProfitMarginTTM', 0) or 0), 2)}%",
             }
         except Exception as e:
             logger.warning(f"[Finnhub] financial_data 获取失败({stock_code}): {e}")
@@ -1509,10 +1526,11 @@ class SinaDataSource(MarketDataSourceBase):
         if self._is_ashare_stock(stock_code):
             basic_info = self.fetch_basic_info(stock_code)
             return {
-                "price": basic_info.get("最新价", 0),
-                "pe_ttm": 0, "pb": 0,
+                "price": basic_info.get("最新价") or None,
+                # 不提供 PE/PB 时用 None 表示缺失，禁止用 0 冒充（0 会被下游当"极低估值"加分）
+                "pe_ttm": None, "pb": None,
                 "pe_history": [], "pb_history": [],
-                "pe_10_avg": 0, "market_cap": 0,
+                "pe_10_avg": None, "market_cap": None,
                 "_note": "A股估值数据请启动本地API获取",
             }
         if self._is_us_stock(stock_code):
@@ -1520,30 +1538,30 @@ class SinaDataSource(MarketDataSourceBase):
             val = fund.get("valuation", {})
             basic_info = self.fetch_basic_info(stock_code)
             return {
-                "price": basic_info.get("最新价", 0),
-                "pe_ttm": val.get("市盈率", 0),
-                "pb": val.get("市净率", 0),
+                "price": basic_info.get("最新价") or None,
+                "pe_ttm": val.get("市盈率") or None,
+                "pb": val.get("市净率") or None,
                 "pe_history": [], "pb_history": [],
-                "pe_10_avg": val.get("市盈率", 0),
-                "market_cap": val.get("总市值", 0),
+                "pe_10_avg": None,
+                "market_cap": val.get("总市值") or None,
             }
         return {"price": None, "pe_ttm": None, "pb": None, "pe_history": [], "pb_history": [], "_data_unavailable": True}
 
     def fetch_financial_data(self, stock_code: str) -> Dict:
         if self._is_ashare_stock(stock_code):
             return {
-                "roe": 0, "gross_profit": 0, "net_profit": "A股请启动本地API",
-                "eps": 0, "market_cap": 0,
+                "roe": None, "gross_profit": None, "net_profit": None,
+                "eps": None, "market_cap": None,
                 "_data_unavailable": True,
             }
         if self._is_us_stock(stock_code):
             basic_info = self.fetch_basic_info(stock_code)
             result = {
-                "roe": 0,
-                "gross_profit": 0,
-                "net_profit": "从新浪获取",
-                "eps": basic_info.get("每股收益", 0),
-                "market_cap": basic_info.get("市值", 0),
+                "roe": None,
+                "gross_profit": None,
+                "net_profit": None,
+                "eps": basic_info.get("每股收益") or None,
+                "market_cap": basic_info.get("市值") or None,
             }
             # 尝试 Finnhub 补充财务细项（ROE / 毛利率 / 净利润）
             try:

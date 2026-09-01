@@ -67,6 +67,8 @@ def to_amount_yuan(raw: Any) -> float:
         pass
     # 含单位（亿 / 万）：拆分数值与单位
     try:
+        # 先剥离千分位逗号与"元/股"等尾缀字符，否则 float() 解析失败被误判为 0
+        s = s.replace(",", "").rstrip("元股")
         for unit, mult in _AMOUNT_UNIT_MULT.items():
             if unit in s:
                 num = float(s.replace(unit, "").strip())

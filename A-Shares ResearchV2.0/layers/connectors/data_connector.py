@@ -488,9 +488,16 @@ class LocalAPIDataSource(DataSourceBase):
     def fetch_financial_data(self, stock_code: str) -> Dict:
         """获取财务数据"""
         if not self.available:
-            return {"roe": None, "gross_profit": None, "net_profit": None, "current_ratio": None, "quick_ratio": None, "error": "本地API不可用"}
+            return {"roe": None, "gross_margin": None, "net_profit_yoy": None,
+                    "gross_profit": None, "net_profit": None,
+                    "current_ratio": None, "quick_ratio": None, "error": "本地API不可用"}
 
-        financial_data = {"roe": None, "gross_profit": None, "net_profit": None, "current_ratio": None, "quick_ratio": None, "error": None}
+        # 键名契约：gross_margin/net_profit_yoy 存比率(0–100 百分数)，
+        # gross_profit/net_profit 保留但恒为 None——绝对额本接口不提供，
+        # 禁止把比率写进绝对额键（下游按键名区分口径）
+        financial_data = {"roe": None, "gross_margin": None, "net_profit_yoy": None,
+                          "gross_profit": None, "net_profit": None,
+                          "current_ratio": None, "quick_ratio": None, "error": None}
 
         try:
             end_date = datetime.now().strftime("%Y-%m-%d")
@@ -506,16 +513,17 @@ class LocalAPIDataSource(DataSourceBase):
                 latest = fina_data["data"][-1]
                 # ROE: API 返回 roe_ttm，不是 roe；统一为 0–100 百分数
                 financial_data["roe"] = to_percent(latest.get("roe_ttm") or latest.get("roe"))
-                # 毛利率: API 返回 gross_margin_ttm
-                financial_data["gross_profit"] = latest.get("gross_margin_ttm") or latest.get("grossprofit_margin")
-                # 净利润同比: API 返回 net_profit_yoy_ttm，不是 profit_dedt_yoy
-                financial_data["net_profit"] = latest.get("net_profit_yoy_ttm") or latest.get("profit_dedt_yoy")
+                # 毛利率: API 返回 gross_margin_ttm（是比率不是毛利额）
+                financial_data["gross_margin"] = to_percent(latest.get("gross_margin_ttm") or latest.get("grossprofit_margin"))
+                # 净利润同比: API 返回 net_profit_yoy_ttm，不是 profit_dedt_yoy（是增速不是利润额）
+                financial_data["net_profit_yoy"] = to_percent(latest.get("net_profit_yoy_ttm") or latest.get("profit_dedt_yoy"))
                 # 流动比率/速动比率: API 实际提供（financial接口），从financial取
                 financial_data["current_ratio"] = latest.get("current_ratio")
                 financial_data["quick_ratio"] = latest.get("quick_ratio")
-                # 资产负债率: API 无 debt_to_assets 字段，从 equity/total_assets 反算
+                # 资产负债率: API 无 debt_to_assets 字段，从 equity/total_assets 反算；
+                # 统一为 0–100 百分数（与 normalize.to_percent 口径一致）
                 if latest.get("total_assets") and latest.get("equity"):
-                    financial_data["debt_to_asset"] = round(1 - latest["equity"] / latest["total_assets"], 4)
+                    financial_data["debt_to_asset"] = round((1 - latest["equity"] / latest["total_assets"]) * 100, 2)
                 else:
                     financial_data["debt_to_asset"] = None
         except Exception as e:
@@ -677,9 +685,11 @@ class DataConnector:
         core_keys = [
             data.get("roe"),
             data.get("净资产收益率"),
+            data.get("gross_margin"),
             data.get("gross_profit"),
             data.get("gross_profit_margin"),
             data.get("毛利率"),
+            data.get("net_profit_yoy"),
             data.get("net_profit"),
             data.get("net_profit_margin"),
         ]

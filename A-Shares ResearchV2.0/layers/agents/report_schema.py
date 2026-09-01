@@ -51,8 +51,10 @@ class AgentReport:
             risk_factors=_safe_str_list(d.get("risk_factors", [])),
             recommendation=_safe_str(d.get("recommendation"), ""),
             supporting_data=d.get("supporting_data", {}) if isinstance(d.get("supporting_data"), dict) else {},
-            raw_text="",
-            parse_error=False,
+            raw_text=_safe_str(d.get("raw_text"), ""),
+            # 必须透传错误/不可用标记：error_report/unavailable_report 的 dict
+            # 依赖该字段在 aggregate_reports 中被排除，否则会伪装成有效中性维度
+            parse_error=bool(d.get("parse_error", False)),
         )
 
 

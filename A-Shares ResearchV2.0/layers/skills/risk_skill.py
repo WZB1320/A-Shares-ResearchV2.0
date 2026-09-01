@@ -96,12 +96,20 @@ class RiskSkill:
         quick_ratio = RiskSkill._extract_financial_field(financial_data, "quick_ratio")
         interest_coverage = RiskSkill._extract_financial_field(financial_data, "interest_coverage")
         ocf = RiskSkill._extract_financial_field(financial_data, "operating_cash_flow")
+        # 绝对净利润（元）：仅连接器外部源会提供，本地API路径为 None
         net_profit = RiskSkill._extract_financial_field(financial_data, "net_profit")
         # 盈利能力指标
         roe = RiskSkill._extract_financial_field(financial_data, "roe")
-        gross_margin = RiskSkill._extract_financial_field(financial_data, "gross_profit") or RiskSkill._extract_financial_field(financial_data, "gross_margin_ttm")
-        net_profit_yoy = RiskSkill._extract_financial_field(financial_data, "net_profit")
+        gross_margin = RiskSkill._extract_financial_field(financial_data, "gross_margin") \
+            or RiskSkill._extract_financial_field(financial_data, "gross_profit") \
+            or RiskSkill._extract_financial_field(financial_data, "gross_margin_ttm")
+        # 净利润同比增速(%)：不得与绝对净利润(net_profit)混用
+        net_profit_yoy = RiskSkill._extract_financial_field(financial_data, "net_profit_yoy") \
+            or RiskSkill._extract_financial_field(financial_data, "net_profit_yoy_ttm") \
+            or RiskSkill._extract_financial_field(financial_data, "profit_dedt_yoy")
         consecutive_losses = financial_data.get("consecutive_losses", 0)
+        if not isinstance(consecutive_losses, (int, float)):
+            consecutive_losses = 0
         audit_opinion = financial_data.get("audit_opinion", "未知")
 
         has_any_data = any(v is not None for v in [debt_to_asset, current_ratio, quick_ratio])
@@ -110,6 +118,9 @@ class RiskSkill:
             return FinancialRiskMetrics(0, 0, 0, 0, False, 0, "未知", RiskLevel.MINIMAL, False)
 
         debt_to_asset = debt_to_asset or 0
+        # 兼容历史 0–1 小数口径（connector 已统一输出 0–100 百分数）
+        if debt_to_asset <= 1:
+            debt_to_asset *= 100
         current_ratio = current_ratio or 0
         quick_ratio = quick_ratio or 0
         interest_coverage = interest_coverage or 999
@@ -118,19 +129,19 @@ class RiskSkill:
 
         cash_shortfall = (ocf is not None and ocf < 0) and (net_profit is not None and net_profit > 0)
 
-        if consecutive_losses >= 2 or (audit_opinion and audit_opinion != "标准无保留" and audit_opinion != "未知") or debt_to_asset > 0.9:
+        if consecutive_losses >= 2 or (audit_opinion and audit_opinion != "标准无保留" and audit_opinion != "未知") or debt_to_asset > 90:
             level = RiskLevel.CRITICAL
-        elif debt_to_asset > 0.8 or (interest_coverage and interest_coverage < 1) or current_ratio < 0.5:
+        elif debt_to_asset > 80 or (interest_coverage and interest_coverage < 1) or current_ratio < 0.5:
             level = RiskLevel.HIGH
-        elif debt_to_asset > 0.7 or (interest_coverage and interest_coverage < 3) or current_ratio < 1:
+        elif debt_to_asset > 70 or (interest_coverage and interest_coverage < 3) or current_ratio < 1:
             level = RiskLevel.MEDIUM
-        elif debt_to_asset > 0.5 or cash_shortfall:
+        elif debt_to_asset > 50 or cash_shortfall:
             level = RiskLevel.LOW
         else:
             level = RiskLevel.MINIMAL
 
         return FinancialRiskMetrics(
-            debt_to_asset=round(debt_to_asset * 100, 2) if debt_to_asset < 10 else round(debt_to_asset, 2),
+            debt_to_asset=round(debt_to_asset, 2),
             current_ratio=round(current_ratio, 2),
             quick_ratio=round(quick_ratio, 2),
             interest_coverage=round(interest_coverage, 2),

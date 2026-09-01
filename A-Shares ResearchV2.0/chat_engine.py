@@ -203,9 +203,9 @@ class ChatEngine:
             if fina and not fina.get("error"):
                 lines.append("\n【财务数据】")
                 lines.append(f"- ROE: {fina.get('roe') if fina.get('roe') is not None else '暂不可用'}")
-                gp = fina.get("gross_profit")
+                gp = fina.get("gross_margin", fina.get("gross_profit"))
                 lines.append(f"- 毛利率: {gp if gp is not None else '暂不可用'}")
-                np_yoy = fina.get("net_profit")
+                np_yoy = fina.get("net_profit_yoy", fina.get("net_profit"))
                 lines.append(f"- 净利润同比: {np_yoy if np_yoy is not None else '暂不可用'}")
                 lines.append(f"- 流动比率: {fina.get('current_ratio') if fina.get('current_ratio') else 'API未提供'}")
                 lines.append(f"- 速动比率: {fina.get('quick_ratio') if fina.get('quick_ratio') else 'API未提供'}")
@@ -217,7 +217,7 @@ class ChatEngine:
             if tech_df is not None and not tech_df.empty:
                 latest = tech_df.iloc[-1]
                 lines.append("\n【技术指标（最新）】")
-                for col in ["close", "ma5", "ma10", "ma20", "ma60", "macd", "rsi", "k", "d", "j"]:
+                for col in ["close", "ma5", "ma10", "ma20", "ma60", "macd", "rsi6", "k", "d", "j"]:
                     if col in latest.index and pd.notna(latest[col]):
                         val = latest[col]
                         lines.append(f"- {col.upper()}: {round(float(val), 4) if isinstance(val, (int, float)) else val}")

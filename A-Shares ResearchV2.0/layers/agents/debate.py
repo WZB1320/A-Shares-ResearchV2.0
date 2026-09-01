@@ -276,6 +276,9 @@ def run_debate_rounds(
         if target not in phase1_reports:
             logger.info(f"[Debate] 跳过 {reviewer}→{target}（目标Agent未参与）")
             continue
+        if reviewer not in phase1_reports:
+            logger.info(f"[Debate] 跳过 {reviewer}→{target}（审阅者未参与本股分析）")
+            continue
 
         target_report = phase1_reports[target]
         if target_report.parse_error:
