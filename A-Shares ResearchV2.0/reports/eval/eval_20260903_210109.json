@@ -1,0 +1,136 @@
+{
+  "timestamp": "20260903_210109",
+  "stock_pool": [
+    "600519"
+  ],
+  "aggregate": {
+    "stocks_total": 1,
+    "stocks_success": 1,
+    "dims_valid": 6,
+    "dims_expected": 6,
+    "structure_pass_rate": 1.0,
+    "grade_consistent_rate": 1.0,
+    "hallucination_rate_avg": 0.0,
+    "hallucination_rate_max": 0.0,
+    "verification_pass_rate": 1.0,
+    "avg_elapsed_s": 95.0
+  },
+  "stocks": [
+    {
+      "stock_code": "600519",
+      "name": "贵州茅台",
+      "group": "消费",
+      "note": "大盘蓝筹/高ROE",
+      "elapsed_s": 95.0,
+      "execution_success": true,
+      "error": null,
+      "overall_score": 56,
+      "overall_grade": "中性",
+      "valid_dims": 6,
+      "dimensions": [
+        {
+          "dim": "tech",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 0,
+          "score": 45,
+          "grade": "中性",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 11,
+          "unverifiable": [],
+          "confidence": 75
+        },
+        {
+          "dim": "fund",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 1,
+          "score": 50,
+          "grade": "中性偏多",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 4,
+          "unverifiable": [],
+          "confidence": 60
+        },
+        {
+          "dim": "capital",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 1,
+          "score": 55,
+          "grade": "中性偏多",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 7,
+          "unverifiable": [],
+          "confidence": 60
+        },
+        {
+          "dim": "industry",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 1,
+          "score": 58,
+          "grade": "中性",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 7,
+          "unverifiable": [],
+          "confidence": 60
+        },
+        {
+          "dim": "risk",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 0,
+          "score": 65,
+          "grade": "中性偏多",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 5,
+          "unverifiable": [],
+          "confidence": 60
+        },
+        {
+          "dim": "valuation",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 1,
+          "score": 60,
+          "grade": "中性",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 14,
+          "unverifiable": [],
+          "confidence": 70
+        }
+      ],
+      "kpi": {
+        "structure_pass_rate": 1.0,
+        "grade_consistent_rate": 1.0,
+        "hallucination_rate_avg": 0.0,
+        "verification_pass_rate": 1.0
+      }
+    }
+  ]
+}

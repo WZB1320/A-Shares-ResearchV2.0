@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional
 
 from config.llm_config import DEFAULT_MODEL, chat_completion
-from layers.agents.report_schema import AgentReport, extract_json
+from layers.agents.report_schema import AgentReport, extract_json, grade_score_gap, _score_to_grade
 
 logger = logging.getLogger("DebateEngine")
 
@@ -221,7 +221,20 @@ def revise_report(
                     recommendation=obj.get("recommendation", original_report.recommendation) if changed else original_report.recommendation,
                     supporting_data=original_report.supporting_data,
                     raw_text=raw_text,
+                    data_verification=original_report.data_verification,
                 )
+
+                # 评分-评级一致性兜底（与 BaseAnalysisAgent 同规则）：脱节 ≥2 档按标准映射纠正
+                gap = grade_score_gap(revised.overall_score, revised.grade)
+                if gap is not None and gap >= 2:
+                    corrected = _score_to_grade(revised.overall_score)
+                    logger.warning(
+                        f"[Debate:revise] {dimension} 修订后评分-评级脱节（gap={gap}档），"
+                        f"grade 由 {revised.grade} 纠正为 {corrected}"
+                        f"（score={revised.overall_score}）"
+                    )
+                    revised.grade = corrected
+                    revised.grade_corrected = True
                 return RevisionResult(
                     dimension=dimension,
                     original_score=original_report.overall_score,

@@ -97,6 +97,14 @@ def init_db():
         """)
         conn.commit()
 
+        # ---- 增量列迁移（幂等）：回测置信度校准所需字段 ----
+        _ensure_column(conn, "analysis_records", "overall_confidence",
+                       "ALTER TABLE analysis_records ADD COLUMN overall_confidence INTEGER DEFAULT 0")
+        _ensure_column(conn, "backtest_outcomes", "predicted_confidence",
+                       "ALTER TABLE backtest_outcomes ADD COLUMN predicted_confidence INTEGER DEFAULT 0")
+        _ensure_column(conn, "backtest_outcomes", "dimension_results",
+                       "ALTER TABLE backtest_outcomes ADD COLUMN dimension_results TEXT DEFAULT '{}'")
+
         # ---- 一次性迁移：旧的 analysis_cache / analysis_snapshots → analysis_records ----
         _migrate_legacy_caches(conn)
 
@@ -116,9 +124,19 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,),
         ).fetchone()
     return row is not None
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
+    """幂等加列：列不存在时执行 ALTER TABLE（用于轻量 schema 迁移）。"""
+    if not _table_exists(conn, table):
+        return
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        conn.execute(ddl)
+        logger.info(f"[DB] 迁移加列: {table}.{column}")
 
 
 def _migrate_legacy_caches(conn: sqlite3.Connection):
@@ -256,6 +274,7 @@ def save_analysis(
     chart_data: Dict = None,
     overall_grade: str = "",
     overall_score: int = 50,
+    overall_confidence: int = 0,
     context_text: str = "",
     dimension_scores: Dict = None,
     key_conclusion: str = "",
@@ -276,9 +295,9 @@ def save_analysis(
         conn.execute(
             """INSERT INTO analysis_records
                (stock_code, report_markdown, reports_json, chart_data_json,
-                overall_grade, overall_score, context_text, dimension_scores,
+                overall_grade, overall_score, overall_confidence, context_text, dimension_scores,
                 key_conclusion, top_signals, top_risks, price_at_analysis, full_report_md)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 stock_code.strip(),
                 report_markdown,
@@ -286,6 +305,7 @@ def save_analysis(
                 json.dumps(chart_data or {}, ensure_ascii=False),
                 overall_grade,
                 overall_score,
+                int(overall_confidence or 0),
                 context_text,
                 json.dumps(dimension_scores or {}, ensure_ascii=False),
                 key_conclusion,
@@ -400,7 +420,7 @@ def get_analysis_records_for_backtest(
     try:
         sql = """
             SELECT ar.stock_code, ar.analyzed_at, ar.overall_grade, ar.overall_score,
-                   ar.dimension_scores, ar.price_at_analysis
+                   ar.overall_confidence, ar.dimension_scores, ar.price_at_analysis
             FROM analysis_records ar
             WHERE ar.price_at_analysis IS NOT NULL
               AND (julianday('now', 'localtime') - julianday(ar.analyzed_at)) >= ?
@@ -436,19 +456,26 @@ def get_analysis_records_for_backtest(
 
 
 def save_backtest_outcome(result) -> bool:
-    """落库单条回测结果（BacktestResult 对象）。"""
+    """落库单条回测结果（BacktestResult 对象）。
+
+    predicted_confidence / dimension_results 供 confidence 校准与维度级校准上下文使用。
+    """
     d = result.to_dict()
+    dim_results = d.get("dimension_correct") or {}
     conn = _get_conn()
     try:
         conn.execute(
             """INSERT INTO backtest_outcomes
                (stock_code, analysis_date, forecast_days, predicted_grade, predicted_score,
+                predicted_confidence, dimension_results,
                 price_at_analysis, price_at_future, return_pct, benchmark_return_pct,
                 excess_return_pct, actual_direction, is_correct)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 d["stock_code"], d["analysis_date"], d["forecast_days"],
                 d["predicted_grade"], d["predicted_score"],
+                int(getattr(result.snapshot, "overall_confidence", 0) or 0),
+                json.dumps({k: bool(v) for k, v in dim_results.items()}, ensure_ascii=False),
                 result.outcome.price_at_analysis, result.outcome.price_at_future,
                 result.outcome.return_pct, result.outcome.benchmark_return_pct,
                 result.outcome.excess_return_pct, result.outcome.direction,
@@ -473,9 +500,41 @@ def get_backtest_outcomes(stock_code: str) -> List[Dict]:
             "ORDER BY analysis_date DESC, forecast_days ASC",
             (stock_code.strip(),),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_decode_outcome_row(dict(r)) for r in rows]
     finally:
         conn.close()
+
+
+def get_all_backtest_outcomes(forecast_days: Optional[int] = None) -> List[Dict]:
+    """读取全量回测结果（供回测报告/整体校准分析），可选按展望期过滤。"""
+    conn = _get_conn()
+    try:
+        if forecast_days:
+            rows = conn.execute(
+                "SELECT * FROM backtest_outcomes WHERE forecast_days = ? "
+                "ORDER BY analysis_date DESC",
+                (forecast_days,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM backtest_outcomes ORDER BY analysis_date DESC"
+            ).fetchall()
+        return [_decode_outcome_row(dict(r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def _decode_outcome_row(d: Dict) -> Dict:
+    """解析回测结果行中的 dimension_results JSON 字段。"""
+    raw = d.get("dimension_results")
+    if isinstance(raw, str) and raw:
+        try:
+            d["dimension_results"] = json.loads(raw)
+        except json.JSONDecodeError:
+            d["dimension_results"] = {}
+    elif raw is None:
+        d["dimension_results"] = {}
+    return d
 
 
 # ==================== 兼容别名（供 chat_engine 等旧调用） ====================

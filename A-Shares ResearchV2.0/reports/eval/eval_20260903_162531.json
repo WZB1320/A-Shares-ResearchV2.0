@@ -1,0 +1,136 @@
+{
+  "timestamp": "20260903_162531",
+  "stock_pool": [
+    "002272"
+  ],
+  "aggregate": {
+    "stocks_total": 1,
+    "stocks_success": 1,
+    "dims_valid": 6,
+    "dims_expected": 6,
+    "structure_pass_rate": 1.0,
+    "grade_consistent_rate": 1.0,
+    "hallucination_rate_avg": 0.0,
+    "hallucination_rate_max": 0.0,
+    "verification_pass_rate": 1.0,
+    "avg_elapsed_s": 135.1
+  },
+  "stocks": [
+    {
+      "stock_code": "002272",
+      "name": "川润股份",
+      "group": "边界样本",
+      "note": "亏损股/数据质量差",
+      "elapsed_s": 135.1,
+      "execution_success": true,
+      "error": null,
+      "overall_score": 45,
+      "overall_grade": "中性",
+      "valid_dims": 6,
+      "dimensions": [
+        {
+          "dim": "tech",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 0,
+          "score": 40,
+          "grade": "中性偏空",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 8,
+          "unverifiable": [],
+          "confidence": 10
+        },
+        {
+          "dim": "fund",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 0,
+          "score": 45,
+          "grade": "中性",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 7,
+          "unverifiable": [],
+          "confidence": 30
+        },
+        {
+          "dim": "capital",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 1,
+          "score": 55,
+          "grade": "中性偏多",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 9,
+          "unverifiable": [],
+          "confidence": 30
+        },
+        {
+          "dim": "industry",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 0,
+          "score": 40,
+          "grade": "中性偏空",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 4,
+          "unverifiable": [],
+          "confidence": 20
+        },
+        {
+          "dim": "risk",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 1,
+          "score": 35,
+          "grade": "看空",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 10,
+          "unverifiable": [],
+          "confidence": 30
+        },
+        {
+          "dim": "valuation",
+          "status": "ok",
+          "structure_pass": true,
+          "grade_valid": true,
+          "grade_consistent": true,
+          "grade_gap": 0,
+          "score": 45,
+          "grade": "中性",
+          "grade_corrected": false,
+          "hallucination_rate": 0.0,
+          "verification_passed": true,
+          "verifiable_numbers": 2,
+          "unverifiable": [],
+          "confidence": 20
+        }
+      ],
+      "kpi": {
+        "structure_pass_rate": 1.0,
+        "grade_consistent_rate": 1.0,
+        "hallucination_rate_avg": 0.0,
+        "verification_pass_rate": 1.0
+      }
+    }
+  ]
+}

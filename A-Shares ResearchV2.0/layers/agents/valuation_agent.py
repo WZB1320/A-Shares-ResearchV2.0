@@ -93,6 +93,10 @@ Step 4: 综合PE和PB的判断，结合行业特性，给出最终估值评分
 14. **涨幅归因**：如果提供了PE贡献和EPS贡献，必须在thesis中明确说明"涨的是PE还是EPS"，这是判断估值可持续性的核心——PE扩张驱动的涨幅不可持续，EPS增长驱动的涨幅才健康。
 {QUANT_ANCHOR_RULE}"""
 
+    def _verification_context(self, stock_code: str, signals) -> str:
+        # prompt 中额外拼接了基本面摘要（ROE/毛利率），校验数字池需包含，否则误判为幻觉
+        return self._build_data_context(stock_code, signals, self._ctx_fundamental_data)
+
     @staticmethod
     def _build_data_context(stock_code: str, signals, fundamental_data=None) -> str:
         industry_label = ValuationSkill.CATEGORY_NAMES.get(signals.metrics.industry_category, "通用")

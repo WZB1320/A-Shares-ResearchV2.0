@@ -32,6 +32,10 @@ class AgentReport:
     supporting_data: Dict[str, Any] = field(default_factory=dict)
     raw_text: str = ""
     parse_error: bool = False
+    # 数字幻觉校验结果（由 BaseAnalysisAgent 写入，from_dict 透传）
+    data_verification: Optional[Dict[str, Any]] = None
+    # 评分-评级脱节时是否被程序纠正为标准映射（BaseAnalysisAgent/debate 写入）
+    grade_corrected: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -55,6 +59,8 @@ class AgentReport:
             # 必须透传错误/不可用标记：error_report/unavailable_report 的 dict
             # 依赖该字段在 aggregate_reports 中被排除，否则会伪装成有效中性维度
             parse_error=bool(d.get("parse_error", False)),
+            data_verification=d.get("data_verification") if isinstance(d.get("data_verification"), dict) else None,
+            grade_corrected=bool(d.get("grade_corrected", False)),
         )
 
 
@@ -314,6 +320,22 @@ def _score_to_grade(score: int) -> str:
         if score >= threshold:
             return grade
     return "强烈看空"
+
+
+# 评级档位（0=最看多 ... 6=最看空），与 _score_to_grade 阈值配套
+GRADE_STEPS = ["强烈看多", "看多", "中性偏多", "中性", "中性偏空", "看空", "强烈看空"]
+
+
+def grade_score_gap(score: int, grade: str) -> Optional[int]:
+    """评分与评级的档位差。
+
+    Returns:
+        0=完全一致；1=相邻档（可接受）；≥2=脱节（需纠正）；None=非法评级
+    """
+    if grade not in GRADE_STEPS:
+        return None
+    expected = _score_to_grade(score)
+    return abs(GRADE_STEPS.index(expected) - GRADE_STEPS.index(grade))
 
 
 def _build_consensus(grade_values: List[int]) -> str:

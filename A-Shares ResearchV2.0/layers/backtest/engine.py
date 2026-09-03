@@ -265,6 +265,7 @@ class BacktestEngine:
             forecast_horizon_days=forecast_days,
             overall_grade=grade,
             overall_score=score,
+            overall_confidence=int(rec.get("overall_confidence") or 0),
             dimension_scores={k: v for k, v in dim_scores.items()
                               if isinstance(v, (int, float))},
         )

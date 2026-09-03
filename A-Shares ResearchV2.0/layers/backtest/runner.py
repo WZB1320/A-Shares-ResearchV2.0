@@ -26,6 +26,10 @@ logger = logging.getLogger("BacktestRunner")
 # 默认回测展望期（与 FORECAST_HORIZONS 对齐）
 DEFAULT_HORIZONS = [20, 60, 120]
 
+# 维度中文名（校准上下文展示用）
+DIM_LABELS = {"tech": "技术面", "fund": "基本面", "capital": "资金面",
+              "industry": "行业面", "risk": "风险面", "valuation": "估值面"}
+
 
 def verify_expired_analyses(
     stock_codes: Optional[List[str]] = None,
@@ -71,11 +75,18 @@ def verify_expired_analyses(
 
 
 def get_calibration_context(stock_code: str) -> str:
-    """从已落库回测结果生成给 LLM 的校准上下文；无数据返回空串。"""
+    """从已落库回测结果生成给 LLM 的校准上下文；无数据返回空串。
+
+    三层校准信息（越用越准的反馈闭环）：
+      1. 整体方向胜率（按展望期）
+      2. 分维度胜率（dimension_results 落库数据聚合）
+      3. confidence 校准偏差（自报置信度 vs 实际命中率的系统性偏差）
+    """
     outcomes = get_backtest_outcomes(stock_code)
     if not outcomes:
         return ""
 
+    # ── 1. 整体方向胜率（按展望期） ──
     by_h: Dict[int, Dict[str, int]] = {}
     for o in outcomes:
         h = o.get("forecast_days") or 60
@@ -84,14 +95,67 @@ def get_calibration_context(stock_code: str) -> str:
         if o.get("is_correct"):
             bucket["correct"] += 1
 
-    lines = [f"[历史回测校准] 针对 {stock_code} 的 N 日方向验证历史:"]
+    lines = [f"[历史回测校准] 针对 {stock_code} 的方向验证历史:"]
+
+    # ── 2. 分维度胜率（合并各展望期） ──
+    dim_stats: Dict[str, Dict[str, int]] = {}
+    for o in outcomes:
+        dim_results = o.get("dimension_results")
+        if not isinstance(dim_results, dict):
+            continue
+        for dim, correct in dim_results.items():
+            s = dim_stats.setdefault(dim, {"correct": 0, "total": 0})
+            s["total"] += 1
+            if correct:
+                s["correct"] += 1
+
     for h in sorted(by_h):
         c = by_h[h]["correct"]
         t = by_h[h]["total"]
         wr = (c / t * 100) if t else 0.0
         lines.append(f"  - {h}日展望: 方向胜率 {wr:.0f}% ({c}/{t})")
-    lines.append(
-        "请结合上述历史准确率，对本轮各维度判断的置信度做相应调整："
-        "历史胜率高的维度可提高权重，偏低的维度请在结论中标注更高不确定性。"
-    )
+
+    weak_dims = []
+    for dim in sorted(dim_stats, key=lambda d: dim_stats[d]["correct"] / max(dim_stats[d]["total"], 1)):
+        s = dim_stats[dim]
+        if s["total"] < 2:
+            continue
+        wr = s["correct"] / s["total"]
+        label = DIM_LABELS.get(dim, dim)
+        lines.append(f"  - {label}维度: 方向胜率 {wr:.0%} ({s['correct']}/{s['total']})")
+        if wr < 0.45:
+            weak_dims.append(label)
+
+    # ── 3. confidence 校准偏差 ──
+    conf_buckets: Dict[str, Dict[str, int]] = {}
+    for o in outcomes:
+        conf = o.get("predicted_confidence") or 0
+        if conf <= 0:
+            continue  # 旧数据无 confidence，跳过
+        bucket = str((conf // 20) * 20)
+        b = conf_buckets.setdefault(bucket, {"correct": 0, "total": 0})
+        b["total"] += 1
+        if o.get("is_correct"):
+            b["correct"] += 1
+
+    overconfident = []
+    for bucket in sorted(conf_buckets):
+        b = conf_buckets[bucket]
+        if b["total"] < 2:
+            continue
+        actual = b["correct"] / b["total"]
+        claimed = int(bucket) + 10  # 桶中点
+        lines.append(f"  - 置信度{bucket}-{int(bucket)+20}区间: 实际命中率 {actual:.0%} ({b['correct']}/{b['total']})")
+        if claimed > 0 and actual < (claimed / 100) - 0.20:
+            overconfident.append(f"置信度{bucket}+区间实际命中率仅{actual:.0%}")
+
+    # ── 汇总校准指令 ──
+    lines.append("请结合上述历史准确率，对本轮各维度判断的置信度做相应调整："
+                 "历史胜率高的维度可提高权重，偏低的维度请在结论中标注更高不确定性。")
+    if weak_dims:
+        lines.append(f"特别注意：{('、'.join(weak_dims))}维度历史方向胜率偏低（<45%），"
+                     "该维度的判断请额外保守，并在 risk_factors 中提示其历史可靠性不足。")
+    if overconfident:
+        lines.append(f"置信度校准提示：{('；'.join(overconfident))}，存在系统性高估，"
+                     "本轮 confidence 请相应下调，避免过度自信。")
     return "\n".join(lines)

@@ -33,6 +33,29 @@ LLM_TEMPERATURE = 0.0
 MAX_PARALLEL_WORKERS = 6
 
 
+def _extract_latest_price(all_data: dict) -> Optional[float]:
+    """从已获取的本地 API 数据中提取最新收盘价（纯内存提取，不发起任何数据请求）。
+
+    price_at_analysis 是回测闭环的收益基准；basic_info 不含价格时，
+    依次尝试 tech_data 最新收盘价 → valuation_data 收盘字段。
+    """
+    # tech_data 按日期升序，最后一条即最新
+    for rec in reversed(all_data.get("tech_data") or []):
+        if not isinstance(rec, dict):
+            continue
+        close = rec.get("close")
+        if isinstance(close, (int, float)) and close > 0:
+            return float(close)
+
+    val = all_data.get("valuation_data") or {}
+    if isinstance(val, dict):
+        for key in ("close", "最新收盘价", "收盘价"):
+            v = val.get(key)
+            if isinstance(v, (int, float)) and v > 0:
+                return float(v)
+    return None
+
+
 class ChiefAgent:
 
     def __init__(
@@ -312,6 +335,11 @@ class ChiefAgent:
             if basic_info:
                 price = basic_info.get("最新价") or basic_info.get("price")
 
+            # 兜底：basic_info 通常不含价格，从技术面最新收盘价取
+            # （price_at_analysis 是回测闭环的收益基准，缺失会导致该记录永远无法参与回测）
+            if not price:
+                price = _extract_latest_price(all_data)
+
             aggregation_subset = aggregation or {}
             all_signals = aggregation_subset.get("all_signals", []) or []
 
@@ -343,6 +371,7 @@ class ChiefAgent:
             "chart_data": chart_data,
             "overall_grade": aggregation.get("overall_grade", "中性"),
             "overall_score": aggregation.get("overall_score", 50),
+            "overall_confidence": aggregation.get("overall_confidence", 0),
             "context_text": context_text,
             # 快照字段：交给 app.py 通过 db.save_analysis 一次性落库，避免双写
             "dimension_scores": dim_scores,
