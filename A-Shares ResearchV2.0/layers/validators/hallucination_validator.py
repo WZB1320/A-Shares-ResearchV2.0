@@ -12,6 +12,9 @@
 - 匹配容差：绝对 0.051 或相对 1%（覆盖正常的舍入书写，如 9.85% 写成 9.9%）
 - 单位换算：数据源以元/股为单位存储大数（如 606792314），LLM 习惯以亿/万书写
   （如"融资余额6.06亿元"），数字池对 ≥1e4 的值自动追加 /1e4 与 /1e8 换算候选
+- 单位错位检测（critical）：报告数字与池中值恰好相差 10^k 倍（k=±1..3）且数字
+  后紧跟金额单位（亿/万/元）时，判定为换算错误（如"56.39亿" vs 数据 5.6394 亿），
+  无论总幻觉率多少都判不通过，强制修正重试
 - 数据池为空或报告数字少于 2 个时跳过校验（避免误杀）
 """
 
@@ -29,9 +32,12 @@ DEFAULT_HALLUCINATION_THRESHOLD = 0.20
 REPORT_TEXT_FIELDS = ("thesis", "recommendation")
 REPORT_LIST_FIELDS = ("key_signals", "risk_factors")
 
-# 两侧均屏蔽的"非数据"数字模式（时间段/日期/代码/指标名/步骤号/分数）
+# 两侧均屏蔽的"非数据"数字模式（时间段/日期/报告期/代码/指标名/步骤号/分数）
 _MASK_PATTERNS = [
     r"\d{4}-\d{1,2}-\d{1,2}",                    # 日期：2024-08-16
+    r"\d{4}(?:Q[1-4]|H[1-2]|第[一二三四1-4]季度|一季报|半年报|三季报|年报|中报)",
+                                                  # 报告期：2026Q2 / 2026H1 / 2026年第2季度 / 2026年报
+                                                  # （prompt 规则要求 LLM 标注报告期口径，年份部分不得判为幻觉）
     r"\d{4}年\d{1,2}月",                          # 日期：2024年8月
     r"\d{4}年",                                   # 年份：2024年
     r"(?<![\d.])\d{6}(?![\d.])",                 # 股票代码：300750（仅独立6位，避免误屏蔽大数中段）
@@ -75,12 +81,12 @@ def extract_numbers(text: str) -> List[float]:
 
 
 def build_number_pool(data_context: str) -> Set[float]:
-    """从数据上下文构建合法数字池（含万/亿单位换算候选值）
+    """从数据上下文构建合法数字池（含万/亿/万亿单位换算候选值）
 
     数据源通常以元/股为单位存储大数（如 rz_balance=606792314），
     LLM 报告习惯以亿/万为单位书写（如"融资余额6.06亿元"）。
-    对 ≥1e4 的值追加 /1e4（万）与 /1e8（亿）换算候选，避免正确的
-    单位换算被误判为幻觉。容差仍为 1%，跨数量级不会误匹配。
+    对 ≥1e4 的值追加 /1e4（万）、/1e8（亿）、/1e12（万亿）换算候选，
+    避免正确的单位换算被误判为幻觉。容差仍为 1%，跨数量级不会误匹配。
     """
     pool = set(extract_numbers(data_context))
     scaled = set()
@@ -88,6 +94,7 @@ def build_number_pool(data_context: str) -> Set[float]:
         if abs(p) >= 1e4:
             scaled.add(round(p / 1e4, 4))
             scaled.add(round(p / 1e8, 4))
+            scaled.add(round(p / 1e12, 4))
     pool |= scaled
     return pool
 
@@ -101,6 +108,36 @@ def _matches_pool(value: float, pool: Set[float]) -> bool:
     return False
 
 
+# 单位错位检测的量级因子（10^±k，k=1..3）
+_MAGNITUDE_FACTORS = (0.001, 0.01, 0.1, 10.0, 100.0, 1000.0)
+# 金额单位标记：仅当数字后 1-2 字符内含这些标记时才启用错位检测
+# （把检测范围限定在金额语境，避免"3连阴"等小整数 ×10 撞上池中无关数字的误报）
+_UNIT_MARKERS = ("亿", "万", "元")
+
+
+def _has_unit_marker(text: str, pos: int) -> bool:
+    """数字结束位置 pos 之后 1-2 字符内是否含金额单位标记"""
+    tail = text[pos:pos + 2]
+    return any(m in tail for m in _UNIT_MARKERS)
+
+
+def _magnitude_match(value: float, pool: Set[float]):
+    """单位错位检测：value×10^k 后命中池值则返回 (池值, 因子)，否则 None
+
+    实测案例：数据 rz_balance=563939375（池含亿候选 5.6394），LLM 误写
+    "融资余额56.39亿元"（÷1e7 而非 ÷1e8），56.39×0.1=5.639 命中 → 判定换算错误。
+    """
+    if value == 0:
+        return None
+    for factor in _MAGNITUDE_FACTORS:
+        scaled = value * factor
+        for p in pool:
+            tolerance = max(0.051, abs(p) * 0.01)
+            if abs(scaled - p) <= tolerance:
+                return (p, factor)
+    return None
+
+
 @dataclass
 class HallucinationCheck:
     """数字幻觉校验结果"""
@@ -109,13 +146,20 @@ class HallucinationCheck:
     verified_count: int = 0
     hallucination_rate: float = 0.0
     unverifiable: List[Dict[str, Any]] = field(default_factory=list)
+    # 单位错位（与池值恰好差 10^k 倍）的数字个数——单个即判不通过，
+    # 因为 10 倍量级的金额错误比多个小误差更严重（总幻觉率会被低占比稀释）
+    critical_count: int = 0
     threshold: float = DEFAULT_HALLUCINATION_THRESHOLD
     skipped: bool = False
     skip_reason: str = ""
 
     @property
     def passed(self) -> bool:
-        return self.skipped or self.hallucination_rate <= self.threshold
+        if self.skipped:
+            return True
+        if self.critical_count > 0:
+            return False
+        return self.hallucination_rate <= self.threshold
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -156,7 +200,8 @@ def validate_report_numbers(
                     texts.append((f"[{i}]", str(item)))
 
     for field_name, text in texts:
-        for match in _NUMBER_RE.finditer(_mask_non_data_numbers(text)):
+        masked_text = _mask_non_data_numbers(text)
+        for match in _NUMBER_RE.finditer(masked_text):
             raw = match.group(0).replace(",", "")
             try:
                 value = float(raw)
@@ -166,11 +211,25 @@ def validate_report_numbers(
             if _matches_pool(value, pool):
                 check.verified_count += 1
             else:
-                check.unverifiable.append(
-                    {"value": value, "raw": raw, "field": field_name, "text": text[:80]}
-                )
+                entry = {"value": value, "raw": raw, "field": field_name, "text": text[:80]}
+                # 单位错位检测：仅对带金额单位（亿/万/元）的数字启用，
+                # 数字与池值恰好差 10^k 倍 → 判定换算错误（critical）
+                if _has_unit_marker(masked_text, match.end()):
+                    mag = _magnitude_match(value, pool)
+                    if mag:
+                        pool_value, factor = mag
+                        entry["critical"] = True
+                        entry["magnitude_match"] = {
+                            "pool_value": pool_value,
+                            "factor": factor,
+                            "hint": (f"报告值是数据值{pool_value}的{1/factor:.0f}倍"
+                                     if factor < 1 else
+                                     f"报告值是数据值{pool_value}的1/{factor:.0f}"),
+                        }
+                        check.critical_count += 1
+                check.unverifiable.append(entry)
 
-    if check.total_numbers < 2:
+    if check.total_numbers < 2 and check.critical_count == 0:
         check.skipped = True
         check.skip_reason = f"报告数字过少（{check.total_numbers}个），跳过校验"
         return check
@@ -190,7 +249,14 @@ def build_correction_feedback(check: HallucinationCheck) -> str:
         f"以下 {len(check.unverifiable)} 个数字未在数据上下文中找到：",
     ]
     for item in check.unverifiable[:8]:
-        lines.append(f'- "{item["raw"]}"（位于 {item["field"]}）')
+        if item.get("critical"):
+            hint = item.get("magnitude_match", {}).get("hint", "")
+            lines.append(
+                f'- "{item["raw"]}"（位于 {item["field"]}）⚠ 疑似单位换算错误：{hint}。'
+                f"请核对换算（亿=元÷1e8，万=元÷1e4）后改写"
+            )
+        else:
+            lines.append(f'- "{item["raw"]}"（位于 {item["field"]}）')
     lines.append(
         "请严格基于数据上下文中的真实数字重新输出完整JSON报告："
         "未通过校验的数字必须替换为数据中的真实值，或改写为不含数字的定性表述后删除该数字；"

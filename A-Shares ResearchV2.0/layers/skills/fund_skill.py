@@ -111,6 +111,8 @@ class FundSignals:
     investment_grade: str
     research_advice: str
     risk_warnings: List[str]
+    # 财务数据所属报告期（供 Agent 标注口径）
+    report_date: str = ""
 
 
 class FundSkill:
@@ -818,6 +820,9 @@ class FundSkill:
         advice = " | ".join(advice_parts)
         logger.info(f"[FundSkill] 分析完成 | 投资评级: {grade} | 综合评分: {overall_score}")
 
+        # 报告期：合并后的 financial_data 已含连接器标注的 report_date（若有）
+        report_date = str(financial_data.get("report_date") or "")
+
         return FundSignals(
             profitability=profitability,
             balance_sheet=balance_sheet,
@@ -828,7 +833,8 @@ class FundSkill:
             overall_score=overall_score,
             investment_grade=grade,
             research_advice=advice,
-            risk_warnings=warnings
+            risk_warnings=warnings,
+            report_date=report_date,
         )
 
 

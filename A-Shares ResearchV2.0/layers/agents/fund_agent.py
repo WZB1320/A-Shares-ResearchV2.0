@@ -102,6 +102,9 @@ Step 5: 综合以上四步骤，加权得出综合评分和投资评级
 
         return f"""股票代码：{stock_code}{data_note}
 
+【财务数据口径】
+{f"财务数据报告期：{signals.report_date}（最新披露期，以下财务指标均为此口径）" if getattr(signals, 'report_date', '') else '财务数据报告期：未提供'}
+
 【盈利能力】
 ROE：{f(signals.profitability.roe_ttm, '%')}
 净利率：{f(signals.profitability.net_margin, '%')}

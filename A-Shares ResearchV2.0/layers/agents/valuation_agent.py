@@ -104,15 +104,23 @@ Step 4: 综合PE和PB的判断，结合行业特性，给出最终估值评分
         # 提取基本面摘要
         fund_summary = ""
         if fundamental_data and isinstance(fundamental_data, dict):
+            from layers.connectors.normalize import latest_finance_record
             valuation = fundamental_data.get("valuation", {})
             finance_list = fundamental_data.get("finance", [])
             roe = valuation.get("净资产收益率", 0)
             gross_margin = 0
-            if finance_list and isinstance(finance_list[-1], dict):
-                gross_margin = finance_list[-1].get("gross_margin_ttm", 0)
+            # 按报告期取最新（顺序无关）；原 finance_list[-1] 在降序列表上取到最旧一期
+            latest_fin = latest_finance_record(finance_list)
+            if latest_fin:
+                gross_margin = latest_fin.get("gross_margin_ttm", 0)
+            # 报告期标注：优先连接器标注，其次从最新财务记录取
+            report_date = str(fundamental_data.get("report_date") or "")
+            if not report_date and latest_fin:
+                report_date = str(latest_fin.get("report_date") or latest_fin.get("end_date") or "")
+            report_line = f"财务数据报告期：{report_date}（最新披露期）\n" if report_date else ""
             fund_summary = f"""
 【基本面摘要】
-ROE：{roe}%
+{report_line}ROE：{roe}%
 毛利率：{gross_margin}%
 """
 

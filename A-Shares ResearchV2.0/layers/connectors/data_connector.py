@@ -245,6 +245,10 @@ class LocalAPIDataSource(DataSourceBase):
             )
             if finance_data and finance_data.get("data"):
                 fundamental_data["finance"] = finance_data["data"]
+                # 最新报告期（降序取 [0]）——供下游 Skill/Agent 标注财务数据口径，
+                # 防止历史报告期数据被当作当前状态引用
+                first = finance_data["data"][0] or {}
+                fundamental_data["report_date"] = first.get("report_date") or first.get("end_date")
 
             # 获取估值指标
             valuation_data = self._safe_fetch(
@@ -253,7 +257,9 @@ class LocalAPIDataSource(DataSourceBase):
                 error_msg=f"估值指标获取失败({stock_code})"
             )
             if valuation_data and valuation_data.get("data") and len(valuation_data["data"]) > 0:
-                latest = valuation_data["data"][-1]
+                # A-Shares-data API 按 trade_date 降序返回（最新在前），取 [0] 才是最新估值快照；
+                # 原 [-1] 会取到窗口内最旧一条（约1年前），导致 fundamental_data.valuation 过期
+                latest = valuation_data["data"][0]
                 fundamental_data["valuation"] = {
                     "市盈率": latest.get("pe_ttm"),
                     "市净率": latest.get("pb"),
@@ -497,7 +503,8 @@ class LocalAPIDataSource(DataSourceBase):
         # 禁止把比率写进绝对额键（下游按键名区分口径）
         financial_data = {"roe": None, "gross_margin": None, "net_profit_yoy": None,
                           "gross_profit": None, "net_profit": None,
-                          "current_ratio": None, "quick_ratio": None, "error": None}
+                          "current_ratio": None, "quick_ratio": None,
+                          "report_date": None, "error": None}
 
         try:
             end_date = datetime.now().strftime("%Y-%m-%d")
@@ -510,7 +517,9 @@ class LocalAPIDataSource(DataSourceBase):
             )
 
             if fina_data and fina_data.get("data") and len(fina_data["data"]) > 0:
-                latest = fina_data["data"][-1]
+                # A-Shares-data API 按 report_date 降序返回（最新在前），取 [0] 才是最新报告期；
+                # 原 [-1] 会取到约3年前的过期快照，导致 financial_data（roe/毛利率等）过期
+                latest = fina_data["data"][0]
                 # ROE: API 返回 roe_ttm，不是 roe；统一为 0–100 百分数
                 financial_data["roe"] = to_percent(latest.get("roe_ttm") or latest.get("roe"))
                 # 毛利率: API 返回 gross_margin_ttm（是比率不是毛利额）
@@ -520,6 +529,8 @@ class LocalAPIDataSource(DataSourceBase):
                 # 流动比率/速动比率: API 实际提供（financial接口），从financial取
                 financial_data["current_ratio"] = latest.get("current_ratio")
                 financial_data["quick_ratio"] = latest.get("quick_ratio")
+                # 报告期标注：与 roe/毛利率等同源（finance[0]），供下游标注数据口径
+                financial_data["report_date"] = latest.get("report_date") or latest.get("end_date")
                 # 资产负债率: API 无 debt_to_assets 字段，从 equity/total_assets 反算；
                 # 统一为 0–100 百分数（与 normalize.to_percent 口径一致）
                 if latest.get("total_assets") and latest.get("equity"):

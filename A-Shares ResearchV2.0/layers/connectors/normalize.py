@@ -79,3 +79,32 @@ def to_amount_yuan(raw: Any) -> float:
         return float(cleaned) if cleaned not in ("", "-", ".") else 0.0
     except (ValueError, TypeError):
         return 0.0
+
+
+def latest_finance_record(finance_list) -> dict:
+    """从财务记录列表中取最新报告期的记录（顺序无关）。
+
+    以 report_date / end_date 字符串最大者为最新；记录无日期字段时
+    退回列表首条（本地 API 按报告期降序返回，[0] 即最新）。
+    历史坑：多处代码用 finance_list[-1] 取"最新"，但本地 API 是降序，
+    [-1] 实际取到 3 年前最旧一期，导致 ROE/毛利率等引用过期报告期。
+    """
+    if not finance_list:
+        return {}
+    dicts = [r for r in finance_list if isinstance(r, dict)]
+    if not dicts:
+        return {}
+
+    def _date_key(rec: dict) -> str:
+        return str(rec.get("report_date") or rec.get("end_date") or "")
+
+    best = max(dicts, key=_date_key)
+    if _date_key(best):
+        return best
+    return dicts[0]
+
+
+def finance_report_date(finance_list) -> str:
+    """取财务记录列表最新报告期日期（YYYY-MM-DD），无数据返回空串。"""
+    rec = latest_finance_record(finance_list)
+    return str(rec.get("report_date") or rec.get("end_date") or "")

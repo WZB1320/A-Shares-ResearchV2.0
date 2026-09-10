@@ -6,6 +6,8 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+from layers.connectors.normalize import latest_finance_record
+
 logger = logging.getLogger("RiskSkill")
 
 
@@ -32,6 +34,8 @@ class FinancialRiskMetrics:
     roe: float = 0.0
     gross_margin: float = 0.0
     net_profit_yoy: float = 0.0
+    # 财务数据所属报告期（供 Agent 标注口径）
+    report_date: str = ""
 
 
 @dataclass
@@ -76,8 +80,10 @@ class RiskSkill:
     def _extract_financial_field(financial_data: Dict, field_name: str) -> Optional[float]:
         finance_list = financial_data.get("finance", [])
         if finance_list and isinstance(finance_list, list) and len(finance_list) > 0:
-            latest = finance_list[-1]
-            if isinstance(latest, dict):
+            # 按报告期取最新（顺序无关）；原 finance_list[-1] 在降序列表上
+            # 会取到最旧一期，导致 ROE 等引用 3 年前报告期
+            latest = latest_finance_record(finance_list)
+            if latest:
                 val = latest.get(field_name)
                 if val is not None:
                     return RiskSkill._safe_float(val)
@@ -140,6 +146,14 @@ class RiskSkill:
         else:
             level = RiskLevel.MINIMAL
 
+        # 报告期：优先连接器标注的 report_date，其次从 finance 列表最新期取
+        report_date = str(financial_data.get("report_date") or "")
+        if not report_date:
+            finance_list = financial_data.get("finance") or []
+            if finance_list:
+                rec = latest_finance_record(finance_list)
+                report_date = str(rec.get("report_date") or rec.get("end_date") or "")
+
         return FinancialRiskMetrics(
             debt_to_asset=round(debt_to_asset, 2),
             current_ratio=round(current_ratio, 2),
@@ -153,6 +167,7 @@ class RiskSkill:
             roe=round(roe, 2) if roe is not None else 0.0,
             gross_margin=round(gross_margin, 2) if gross_margin is not None else 0.0,
             net_profit_yoy=round(net_profit_yoy, 2) if net_profit_yoy is not None else 0.0,
+            report_date=report_date,
         )
 
     @staticmethod

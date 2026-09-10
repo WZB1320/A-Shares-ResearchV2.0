@@ -87,10 +87,12 @@ Step 4: 综合各维度风险等级，加权计算整体风险评分
     @staticmethod
     def _build_data_context(stock_code: str, signals) -> str:
         unavailable_text = chr(10).join(f'  - {d}' for d in signals.unavailable_dimensions) if signals.unavailable_dimensions else '无'
+        report_date_line = (f"财务数据报告期：{signals.financial.report_date}（最新披露期）\n"
+                            if getattr(signals.financial, "report_date", "") else "")
         return f"""股票代码：{stock_code}
 
 【财务风险】
-资产负债率：{signals.financial.debt_to_asset}%
+{report_date_line}资产负债率：{signals.financial.debt_to_asset}%
 流动比率：{signals.financial.current_ratio}
 速动比率：{signals.financial.quick_ratio}
 ROE：{signals.financial.roe}%

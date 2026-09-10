@@ -89,7 +89,7 @@ Step 4: 综合数据可得性和行业定位，得出行业层面投资结论
 缺失数据：{', '.join(signals.data_unavailable_fields) if signals.data_unavailable_fields else '无'}
 
 【个股财务摘要】
-ROE：{signals.stock_roe}%
+{f"财务数据报告期：{signals.report_date}（最新披露期）" + chr(10) if getattr(signals, 'report_date', '') else ''}ROE：{signals.stock_roe}%
 毛利率：{signals.stock_gross_margin}%
 营收增速：{signals.stock_revenue_growth}%"""
 

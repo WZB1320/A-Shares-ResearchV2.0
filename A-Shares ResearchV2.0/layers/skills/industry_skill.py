@@ -5,6 +5,8 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+from layers.connectors.normalize import latest_finance_record
+
 logger = logging.getLogger("IndustrySkill")
 
 
@@ -62,6 +64,8 @@ class IndustrySignals:
     stock_roe: float = 0.0
     stock_gross_margin: float = 0.0
     stock_revenue_growth: float = 0.0
+    # 财务数据所属报告期（供 Agent 标注口径）
+    report_date: str = ""
 
 
 class IndustrySkill:
@@ -93,8 +97,8 @@ class IndustrySkill:
         finance = fundamental_data.get("finance", [])
         if finance:
             available.append(f"财务数据({len(finance)}期)")
-            # 检查最新期财务数据中的关键字段
-            latest = finance[-1] if isinstance(finance[-1], dict) else {}
+            # 检查最新期财务数据中的关键字段（按报告期取最新，顺序无关）
+            latest = latest_finance_record(finance)
             for field, label in [("roe_ttm", "ROE"), ("gross_margin_ttm", "毛利率"), ("current_ratio", "流动比率"), ("revenue_yoy_ttm", "营收增速")]:
                 if latest.get(field) is not None:
                     available.append(label)
@@ -139,23 +143,23 @@ class IndustrySkill:
         if stock_roe == 0:
             finance_list = stock_financials.get("finance", [])
             if finance_list and isinstance(finance_list, list) and len(finance_list) > 0:
-                latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+                latest_fin = latest_finance_record(finance_list)
                 stock_roe = IndustrySkill._safe_float(latest_fin.get("roe_ttm", latest_fin.get("roe", 0)))
-        
+
         # 毛利率: 优先从 finance 最新期取 gross_margin_ttm
         stock_margin = IndustrySkill._safe_float(stock_financials.get("gross_profit_margin", stock_financials.get("gross_margin_ttm", stock_financials.get("毛利率", 0))))
         if stock_margin == 0:
             finance_list = stock_financials.get("finance", [])
             if finance_list and isinstance(finance_list, list) and len(finance_list) > 0:
-                latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+                latest_fin = latest_finance_record(finance_list)
                 stock_margin = IndustrySkill._safe_float(latest_fin.get("gross_margin_ttm", latest_fin.get("grossprofit_margin", 0)))
-        
+
         # 营收增速: 从 finance 最新期取 revenue_yoy_ttm
         stock_growth = IndustrySkill._safe_float(stock_financials.get("revenue_growth", stock_financials.get("营收增速", 0)))
         if stock_growth == 0:
             finance_list = stock_financials.get("finance", [])
             if finance_list and isinstance(finance_list, list) and len(finance_list) > 0:
-                latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+                latest_fin = latest_finance_record(finance_list)
                 stock_growth = IndustrySkill._safe_float(latest_fin.get("revenue_yoy_ttm", latest_fin.get("revenue_yoy_qoq", 0)))
         
         # 收集同行业数据
@@ -259,12 +263,18 @@ class IndustrySkill:
         finance_list = fundamental_data.get("finance", [])
         stock_roe = IndustrySkill._safe_float(valuation.get("净资产收益率", 0))
         if stock_roe == 0 and finance_list:
-            latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+            latest_fin = latest_finance_record(finance_list)
             stock_roe = IndustrySkill._safe_float(latest_fin.get("roe_ttm", 0))
         if finance_list:
-            latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
+            latest_fin = latest_finance_record(finance_list)
             stock_gross_margin = IndustrySkill._safe_float(latest_fin.get("gross_margin_ttm", 0))
             stock_revenue_growth = IndustrySkill._safe_float(latest_fin.get("revenue_yoy_ttm", 0))
+
+        # 报告期：优先连接器标注，其次从 finance 最新期取
+        report_date = str(fundamental_data.get("report_date") or "")
+        if not report_date and finance_list:
+            report_date = str(latest_finance_record(finance_list).get("report_date")
+                               or latest_finance_record(finance_list).get("end_date") or "")
 
         # ── 行业对标分析 ──
         peer_comparison = IndustrySkill.analyze_peer_comparison(fundamental_data, fundamental_data)
@@ -350,6 +360,7 @@ class IndustrySkill:
             stock_roe=round(stock_roe, 2),
             stock_gross_margin=round(stock_gross_margin, 2),
             stock_revenue_growth=round(stock_revenue_growth, 2),
+            report_date=report_date,
         )
 
 
