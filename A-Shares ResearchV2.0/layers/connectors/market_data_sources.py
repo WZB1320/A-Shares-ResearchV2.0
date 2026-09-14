@@ -442,7 +442,10 @@ class AkShareDataSource(MarketDataSourceBase):
             try:
                 fin_df = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
                 if not fin_df.empty:
-                    latest = fin_df.iloc[-1]
+                    # 外部源排序不可控:有报告期列则降序排序,保证 iloc[0] 恒为最新一期
+                    if "报告期" in fin_df.columns:
+                        fin_df = fin_df.sort_values("报告期", ascending=False)
+                    latest = fin_df.iloc[0]
 
                     valuation = {
                         "市盈率": 0,
@@ -480,6 +483,9 @@ class AkShareDataSource(MarketDataSourceBase):
             try:
                 fin_df2 = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
                 if not fin_df2.empty:
+                    # 对齐本地 API 语义:最新报告期在前(降序)
+                    if "报告期" in fin_df2.columns:
+                        fin_df2 = fin_df2.sort_values("报告期", ascending=False)
                     finance = fin_df2.to_dict("records")
             except Exception:
                 pass
@@ -521,7 +527,10 @@ class AkShareDataSource(MarketDataSourceBase):
             try:
                 fin_df = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
                 if not fin_df.empty:
-                    latest = fin_df.iloc[-1]
+                    # 外部源排序不可控:有报告期列则降序排序,保证 iloc[0] 恒为最新一期
+                    if "报告期" in fin_df.columns:
+                        fin_df = fin_df.sort_values("报告期", ascending=False)
+                    latest = fin_df.iloc[0]
 
                     roe = to_percent(latest.get("净资产收益率", 0))
                     gross_margin = to_percent(latest.get("销售毛利率", 0))

@@ -193,8 +193,10 @@ class ValuationSkill:
             if fundamental_data and isinstance(fundamental_data, dict):
                 finance_list = fundamental_data.get("finance", [])
                 if isinstance(finance_list, list) and len(finance_list) >= 2:
-                    latest_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
-                    old_fin = finance_list[0] if isinstance(finance_list[0], dict) else {}
+                    # API 按报告期降序返回:[0]=最新报告期,[-1]=最早报告期
+                    # (原代码两者取反,导致涨幅归因的 EPS 新旧颠倒)
+                    latest_fin = finance_list[0] if isinstance(finance_list[0], dict) else {}
+                    old_fin = finance_list[-1] if isinstance(finance_list[-1], dict) else {}
                     eps_now_fin = latest_fin.get("eps") or latest_fin.get("basic_eps") or latest_fin.get("每股收益")
                     eps_old_fin = old_fin.get("eps") or old_fin.get("basic_eps") or old_fin.get("每股收益")
                     if eps_now_fin and eps_old_fin and eps_old_fin > 0:

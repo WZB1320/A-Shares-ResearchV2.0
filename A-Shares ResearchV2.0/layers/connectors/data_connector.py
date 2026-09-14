@@ -198,7 +198,8 @@ class LocalAPIDataSource(DataSourceBase):
             error_msg=f"北向资金获取失败({stock_code})"
         )
         if north_data and north_data.get("data"):
-            capital_data["north"] = north_data["data"]
+            # API 降序返回;反转为升序(旧→新),下游 [-1]/[-5:] 取"最新/最近N日"才成立
+            capital_data["north"] = list(reversed(north_data["data"]))
         else:
             capital_data["north_unavailable"] = True  # 因监管政策自2024-08-16停止更新
             capital_data["north_unavailable_reason"] = "因监管政策自2024-08-16停止披露北向个股日度持股明细"
@@ -210,7 +211,8 @@ class LocalAPIDataSource(DataSourceBase):
             error_msg=f"融资融券数据获取失败({stock_code})"
         )
         if margin_data and margin_data.get("data"):
-            capital_data["margin"] = margin_data["data"]
+            # 同上,反转升序
+            capital_data["margin"] = list(reversed(margin_data["data"]))
 
         # 获取龙虎榜数据
         dragon_data = self._safe_fetch(
@@ -219,7 +221,8 @@ class LocalAPIDataSource(DataSourceBase):
             error_msg=f"龙虎榜数据获取失败({stock_code})"
         )
         if dragon_data and dragon_data.get("data"):
-            capital_data["dragon"] = dragon_data["data"]
+            # 同上,反转升序
+            capital_data["dragon"] = list(reversed(dragon_data["data"]))
 
         return capital_data
 
@@ -322,6 +325,10 @@ class LocalAPIDataSource(DataSourceBase):
                 "vol": "volume",
                 "amount": "amount"
             }, inplace=True, errors="ignore")
+
+            # 本地 API 按 trade_date 降序返回(最新在前);rolling/pct_change/tail 及下游
+            # iloc[-1] 全部假定时间升序,统一排序为升序(旧→新),否则全链路取到旧数据
+            df = df.sort_values("date").reset_index(drop=True)
 
             # 确保列存在
             required_cols = ["date", "open", "high", "low", "close", "volume", "amount"]
@@ -450,7 +457,8 @@ class LocalAPIDataSource(DataSourceBase):
 
             if val_data and val_data.get("data"):
                 if len(val_data["data"]) > 0:
-                    latest = val_data["data"][-1]
+                    # API 按 trade_date 降序返回(最新在前),[0] 才是最新快照
+                    latest = val_data["data"][0]
                     pe_ttm = latest.get("pe_ttm")
                     pb = latest.get("pb")
                     # Fix #5: PE为负表示公司亏损，标注"PE不适用"而非传0
@@ -469,10 +477,11 @@ class LocalAPIDataSource(DataSourceBase):
                         if daily and daily.get("data") and len(daily["data"]) > 0:
                             valuation_data["price"] = daily["data"][0].get("close")
 
-                # 收集历史数据
+                # 收集历史数据(reversed 转为时间升序:最旧在前最新在尾,
+                # 使下方 [-120:] 取"最近120日"、下游 [-N] 取"N日前"语义成立)
                 pe_list = []
                 pb_list = []
-                for item in val_data["data"]:
+                for item in reversed(val_data["data"]):
                     if item.get("pe_ttm"):
                         pe_list.append(item["pe_ttm"])
                     if item.get("pb"):

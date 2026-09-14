@@ -241,7 +241,13 @@ class DataValidator:
                 return dim
 
             if isinstance(finance, list) and len(finance) > 0:
-                latest_finance = finance[-1]
+                # 本地 API 按报告期降序返回(最新在前),[-1] 会取到最旧一期;
+                # 按报告期取最新,顺序无关
+                latest_finance = max(
+                    (r for r in finance if isinstance(r, dict)),
+                    key=lambda r: str(r.get("report_date") or r.get("end_date") or ""),
+                    default={},
+                )
             else:
                 dim.score = 0
                 dim.grade = "无效"
